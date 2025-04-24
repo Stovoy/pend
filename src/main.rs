@@ -12,6 +12,11 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     dir: Option<std::path::PathBuf>,
 
+    /// Disable ANSI color escapes in multi-job output. Takes precedence over
+    /// the `NO_COLOR` environment variable when supplied.
+    #[arg(long, global = true)]
+    no_color: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -47,6 +52,13 @@ fn main() -> io::Result<()> {
     // spawned worker processes pick it up.
     if let Some(dir) = &cli.dir {
         std::env::set_var("PEND_DIR", dir);
+    }
+
+    // Respect the `--no-color` flag by exporting the canonical `NO_COLOR`
+    // environment variable so that library helpers and worker processes see
+    // the same preference.
+    if cli.no_color {
+        std::env::set_var("NO_COLOR", "1");
     }
 
     match cli.command {

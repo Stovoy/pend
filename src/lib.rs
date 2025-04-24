@@ -104,6 +104,28 @@ pub fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
     if job_name.trim().is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "job name cannot be empty"));
     }
+
+    // Reject names that could escape the jobs directory or clash with
+    // neighbouring files. We only permit ASCII letters, digits, `-` and `_`
+    // and disallow path separators outright.
+    if !job_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "job name contains invalid characters",
+        ));
+    }
+
+    // A path separator slipping through `is_ascii_alphanumeric` check on
+    // certain platforms would be caught here as an additional safety net.
+    if job_name.contains('/') || job_name.contains('\\') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "job name must not contain path separators",
+        ));
+    }
     if cmd.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "command cannot be empty"));
     }
@@ -284,6 +306,12 @@ const COLOR_CODES: [&str; 6] = [
     "\x1b[36m", // cyan
 ];
 
+fn colors_enabled() -> bool {
+    // De-facto standard: if the `NO_COLOR` environment variable is present
+    // (with any value), programs should avoid emitting ANSI escape sequences.
+    std::env::var_os("NO_COLOR").is_none()
+}
+
 struct JobState {
     name: String,
     log_path: PathBuf,
@@ -295,6 +323,7 @@ struct JobState {
 
 impl JobState {
     fn new(name: &str, color: &'static str) -> Self {
+        let effective_color = if colors_enabled() { color } else { "" };
         let paths = JobPaths::new(name);
         Self {
             name: name.to_string(),
@@ -302,7 +331,7 @@ impl JobState {
             exit_path: paths.exit,
             log_offset: 0,
             exit_code: None,
-            color,
+            color: effective_color,
         }
     }
 
@@ -326,9 +355,13 @@ impl JobState {
             *offset = size;
 
             if !buffer.is_empty() {
-                let reset = "\x1b[0m";
-                io::stdout()
-                    .write_all(format!("{}{}{}", self.color, String::from_utf8_lossy(&buffer), reset).as_bytes())?;
+                if self.color.is_empty() {
+                    io::stdout().write_all(&buffer)?;
+                } else {
+                    let reset = "\x1b[0m";
+                    io::stdout()
+                        .write_all(format!("{}{}{}", self.color, String::from_utf8_lossy(&buffer), reset).as_bytes())?;
+                }
                 io::stdout().flush()?;
             }
 
