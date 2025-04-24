@@ -30,6 +30,7 @@ pub(crate) struct JobPaths {
     pub exit: PathBuf,
     pub meta: PathBuf,
     pub log: PathBuf,
+    pub lock: PathBuf,
 }
 
 impl JobPaths {
@@ -41,6 +42,7 @@ impl JobPaths {
             exit: root.join(format!("{}.exit", job_name)),
             meta: root.join(format!("{}.json", job_name)),
             log: root.join(format!("{}.log", job_name)),
+            lock: root.join(format!("{}.lock", job_name)),
         })
     }
 

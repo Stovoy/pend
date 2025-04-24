@@ -58,6 +58,33 @@ pub(crate) fn spawn_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
 pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     let paths = JobPaths::new(job_name)?;
 
+    // ------------------------------------------------------------------
+    // Obtain the same advisory file lock that `pend do` used for the brief
+    // initialisation window. Holding the lock for the entire lifetime of
+    // the worker process guarantees that *no* second job with the same
+    // name can start while this one is still executing, even after the
+    // parent process has exited and released its short-lived lock.
+    // ------------------------------------------------------------------
+
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&paths.lock)?;
+
+    if let Err(err) = lock_file.try_lock_exclusive() {
+        if err.kind() == std::io::ErrorKind::WouldBlock {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("job '{job_name}' is already running"),
+            ));
+        } else {
+            return Err(err);
+        }
+    }
+
     // We'll capture stdout/stderr via pipes so that we can merge them while
     // still writing dedicated .out / .err files.
     let started = chrono::Utc::now();

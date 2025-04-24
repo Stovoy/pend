@@ -1,6 +1,8 @@
 use std::io;
 
 use crate::paths::JobPaths;
+use std::fs::OpenOptions;
+use fs2::FileExt;
 
 /// Public helper equivalent to `pend do <job> <cmd …>`.
 pub fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
@@ -81,6 +83,32 @@ pub fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
     }
 
     let paths = JobPaths::new(job_name)?;
+
+    // ------------------------------------------------------------------
+    // Advisory lock to guard against concurrent `pend do` invocations for
+    // the *same* job name. We create (or open) a lightweight `.lock` file
+    // next to the other artefacts and attempt to obtain a non-blocking
+    // exclusive lock. If another process already holds the lock we surface
+    // a user-friendly error immediately instead of racing to create the
+    // artefact files only to fail later on.
+    // ------------------------------------------------------------------
+
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&paths.lock)?;
+
+    if let Err(err) = lock_file.try_lock_exclusive() {
+        if err.kind() == io::ErrorKind::WouldBlock {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("job '{job_name}' is already running"),
+            ));
+        } else {
+            return Err(err);
+        }
+    }
+
     if paths.any_exist() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
