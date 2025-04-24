@@ -283,12 +283,19 @@ fn wait_single(job_name: &str) -> io::Result<i32> {
     // deferring the existence check.  We now rely on the appearance of the
     // `.exit` file which is written by the worker once the job completes.
 
-    // Poll for the .exit file.
-    loop {
-        if paths.exit.exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    // Poll for the `.exit` file. We start with a short interval and
+    // exponentially back off up to a sensible upper bound. For a single job
+    // there is no notion of "progress" like we have in the multi-job helper
+    // below, so we simply increase the delay every time the file is still
+    // absent instead of resetting on activity.
+
+    let base_delay = std::time::Duration::from_millis(50);
+    let max_delay = std::time::Duration::from_secs(2);
+    let mut current_delay = base_delay;
+
+    while !paths.exit.exists() {
+        std::thread::sleep(current_delay);
+        current_delay = std::cmp::min(current_delay * 2, max_delay);
     }
 
     // Replay output in original order if combined `.log` exists.
