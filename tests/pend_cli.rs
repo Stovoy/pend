@@ -90,3 +90,59 @@ fn dir_flag_overrides_env() {
     assert!(flag_dir.path().join("flagjob.out").exists());
     assert!(!env_dir.path().join("flagjob.out").exists());
 }
+
+/// Spawn two background jobs that finish at different times and wait for both
+/// of them simultaneously. The helper should replay *both* job logs and exit
+/// with the non-zero status code of the first failing job that finishes.
+#[test]
+fn multi_job_interleaved_wait() {
+    // Dedicated temporary jobs directory for test isolation.
+    let (tmp, _) = pend_with_tempdir();
+
+    let pend_path = assert_cmd::cargo::cargo_bin("pend");
+
+    // Start a fast-failing job (exit 2).
+    Command::new(&pend_path)
+        .env("PEND_DIR", tmp.path())
+        .args([
+            "do",
+            "failfast",
+            "bash",
+            "-c",
+            "echo failfast-start && exit 2",
+        ])
+        .assert()
+        .success();
+
+    // Start a slower succeeding job.
+    Command::new(&pend_path)
+        .env("PEND_DIR", tmp.path())
+        .args([
+            "do",
+            "slowok",
+            "bash",
+            "-c",
+            "echo slowok-start && sleep 0.2 && echo slowok-end",
+        ])
+        .assert()
+        .success();
+
+    // Wait on *both* jobs at once. Disable ANSI colors for predictable output.
+    Command::new(&pend_path)
+        .env("PEND_DIR", tmp.path())
+        .args([
+            "--no-color",
+            "wait",
+            "failfast",
+            "slowok",
+        ])
+        .assert()
+        // Expect the combined output from both jobs.
+        .stdout(predicate::str::contains("failfast-start"))
+        .stdout(predicate::str::contains("slowok-start"))
+        .stdout(predicate::str::contains("slowok-end"))
+        // The overall exit code must reflect the non-zero result of the
+        // failing job.
+        .code(2)
+        .failure();
+}
