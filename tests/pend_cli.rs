@@ -43,9 +43,14 @@ fn propagates_failure_exit_code() {
 
     let pend_path = assert_cmd::cargo::cargo_bin("pend");
 
-    cmd.args(["do", "failjob", pend_path.to_str().unwrap(), "--invalid-flag"])
-        .assert()
-        .success();
+    cmd.args([
+        "do",
+        "failjob",
+        pend_path.to_str().unwrap(),
+        "--invalid-flag",
+    ])
+    .assert()
+    .success();
 
     pend_bin()
         .env("PEND_DIR", tmp.path())
@@ -81,7 +86,12 @@ fn dir_flag_overrides_env() {
     // wait – rely on PEND_DIR env to *not* find job; should only exist in flag_dir.
     Command::new(&pend_path)
         .env("PEND_DIR", env_dir.path())
-        .args(["--dir", flag_dir.path().to_str().unwrap(), "wait", "flagjob"])
+        .args([
+            "--dir",
+            flag_dir.path().to_str().unwrap(),
+            "wait",
+            "flagjob",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("fromflag"));
@@ -130,12 +140,7 @@ fn multi_job_interleaved_wait() {
     // Wait on *both* jobs at once. Disable ANSI colors for predictable output.
     Command::new(&pend_path)
         .env("PEND_DIR", tmp.path())
-        .args([
-            "--no-color",
-            "wait",
-            "failfast",
-            "slowok",
-        ])
+        .args(["--no-color", "wait", "failfast", "slowok"])
         .assert()
         // Expect the combined output from both jobs.
         .stdout(predicate::str::contains("failfast-start"))

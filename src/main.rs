@@ -2,16 +2,15 @@ use clap::{Parser, Subcommand};
 
 use std::io;
 
-
-mod paths;
 mod color;
 mod job;
-mod worker;
+mod paths;
 mod wait;
+mod worker;
 
 use job::do_job;
-use worker::run_worker;
 use wait::wait_jobs;
+use worker::run_worker;
 
 /// do now, wait later – a tiny job runner
 #[derive(Parser)]

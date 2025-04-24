@@ -45,7 +45,10 @@ pub(crate) fn spawn_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
         worker_cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
 
-    worker_cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    worker_cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     worker_cmd.spawn()?;
     Ok(())
 }

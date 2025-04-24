@@ -7,7 +7,10 @@ use crate::paths::JobPaths;
 /// Public helper mirroring `pend wait <job …>`.
 pub fn wait_jobs(job_names: &[String]) -> io::Result<i32> {
     if job_names.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no job names supplied"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no job names supplied",
+        ));
     }
 
     if job_names.len() == 1 {
@@ -116,8 +119,15 @@ impl JobState {
                     io::stdout().write_all(&buffer)?;
                 } else {
                     let reset = "\x1b[0m";
-                    io::stdout()
-                        .write_all(format!("{}{}{}", self.color, String::from_utf8_lossy(&buffer), reset).as_bytes())?;
+                    io::stdout().write_all(
+                        format!(
+                            "{}{}{}",
+                            self.color,
+                            String::from_utf8_lossy(&buffer),
+                            reset
+                        )
+                        .as_bytes(),
+                    )?;
                 }
                 io::stdout().flush()?;
             }
@@ -147,7 +157,10 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
 
     // Basic sanity check: all jobs must have started.
     for job in &jobs {
-        if !job.log_path.exists() && !job.exit_path.exists() && !job.log_path.with_extension("out").exists() {
+        if !job.log_path.exists()
+            && !job.exit_path.exists()
+            && !job.log_path.with_extension("out").exists()
+        {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("unknown job '{}'", job.name),
@@ -216,7 +229,11 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
 // Shared helpers
 // -------------------------------------------------------------------------
 
-fn emit_summary<P: AsRef<std::path::Path>>(job_name: &str, exit_code: i32, meta_path: P) -> io::Result<()> {
+fn emit_summary<P: AsRef<std::path::Path>>(
+    job_name: &str,
+    exit_code: i32,
+    meta_path: P,
+) -> io::Result<()> {
     let meta_path = meta_path.as_ref();
 
     let duration_secs = if let Ok(meta_bytes) = fs::read(meta_path) {
@@ -242,6 +259,9 @@ fn emit_summary<P: AsRef<std::path::Path>>(job_name: &str, exit_code: i32, meta_
     };
 
     let symbol = if exit_code == 0 { "✓" } else { "✗" };
-    println!("{} {} ({} s) – exit {}", symbol, job_name, duration_secs, exit_code);
+    println!(
+        "{} {} ({} s) – exit {}",
+        symbol, job_name, duration_secs, exit_code
+    );
     Ok(())
 }
