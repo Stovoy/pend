@@ -117,6 +117,43 @@ pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     // finish flushing their respective buffers.
     let status = child_proc.wait()?;
 
+    // ------------------------------------------------------------------
+    // Determine a portable numeric exit code.
+    //
+    // On Unix-like systems a process that terminates due to a signal does
+    // not have a conventional exit status.  The idiomatic convention used
+    // by many tools (bash, coreutils, git, etc.) is to report *128 + signal*.
+    // Capturing this information allows the parent `pend wait` invocation to
+    // faithfully propagate failure causes such as SIGKILL or SIGTERM.
+    //
+    // On non-Unix platforms we fall back to the existing behaviour.
+    // ------------------------------------------------------------------
+
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+
+    let exit_code = match status.code() {
+        Some(code) => code,
+        None => {
+            #[cfg(unix)]
+            {
+                // SAFETY: `signal()` is only available on Unix targets as
+                // guarded by the cfg gate above.
+                if let Some(sig) = status.signal() {
+                    128 + sig
+                } else {
+                    // Fallback – should not happen but keeps the compiler
+                    // happy if the platform does not support signals.
+                    1
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                1
+            }
+        }
+    };
+
     let join_and_check = |handle: std::thread::JoinHandle<io::Result<()>>| -> io::Result<()> {
         match handle.join() {
             Err(join_err) => Err(io::Error::new(
@@ -130,7 +167,6 @@ pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     join_and_check(stdout_handle)?;
     join_and_check(stderr_handle)?;
 
-    let exit_code = status.code().unwrap_or(1);
     let ended = chrono::Utc::now();
 
     // Write exit code file.
