@@ -247,12 +247,11 @@ pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
 fn wait_single(job_name: &str) -> io::Result<i32> {
     let paths = JobPaths::new(job_name);
 
-    if !paths.out.exists() && !paths.err.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("unknown job '{job_name}'"),
-        ));
-    }
+    // The worker process may not have had a chance to create its artifact
+    // files yet when `pend wait` is invoked immediately after `pend do`.
+    // Avoid a race where we mistake a just-spawned job for an unknown one by
+    // deferring the existence check.  We now rely on the appearance of the
+    // `.exit` file which is written by the worker once the job completes.
 
     // Poll for the .exit file.
     loop {
