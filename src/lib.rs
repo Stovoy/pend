@@ -276,7 +276,40 @@ fn wait_single(job_name: &str) -> io::Result<i32> {
     }
 
     let exit_str = fs::read_to_string(&paths.exit)?;
-    Ok(exit_str.trim().parse::<i32>().unwrap_or(1))
+    // Parse exit code – default to 1 on unparsable output.
+    let code = exit_str.trim().parse::<i32>().unwrap_or(1);
+
+    // After the job has completed we emit a concise human-readable summary
+    // line so that users can immediately see whether the run succeeded or
+    // failed without scrolling through potentially verbose logs.
+    //
+    // Example:
+    // ✓ okjob (42 s) – exit 0
+    // ✗ failjob (3 s) – exit 1
+    if let Ok(meta_bytes) = fs::read(&paths.meta) {
+        if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_bytes) {
+            let started = meta_json.get("started").and_then(|v| v.as_str());
+            let ended = meta_json.get("ended").and_then(|v| v.as_str());
+
+            let duration_secs = if let (Some(start), Some(end)) = (started, ended) {
+                let start_dt = chrono::DateTime::parse_from_rfc3339(start).ok();
+                let end_dt = chrono::DateTime::parse_from_rfc3339(end).ok();
+                if let (Some(s), Some(e)) = (start_dt, end_dt) {
+                    let diff = e.signed_duration_since(s);
+                    diff.num_seconds().max(0)
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let symbol = if code == 0 { "✓" } else { "✗" };
+            println!("{} {} ({} s) – exit {}", symbol, job_name, duration_secs, code);
+        }
+    }
+
+    Ok(code)
 }
 
 /// Public helper mirroring `pend wait <job …>`.
@@ -435,6 +468,36 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
     // Ensure we drained final output.
     for job in &mut jobs {
         job.poll()?;
+    }
+
+    // After all jobs finished, print a concise summary line per job.
+    for job in &jobs {
+        let meta_path = JobPaths::new(&job.name).meta;
+        let duration_secs = if let Ok(meta_bytes) = fs::read(&meta_path) {
+            if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_bytes) {
+                let started = meta_json.get("started").and_then(|v| v.as_str());
+                let ended = meta_json.get("ended").and_then(|v| v.as_str());
+                if let (Some(start), Some(end)) = (started, ended) {
+                    let s = chrono::DateTime::parse_from_rfc3339(start).ok();
+                    let e = chrono::DateTime::parse_from_rfc3339(end).ok();
+                    if let (Some(sdt), Some(edt)) = (s, e) {
+                        edt.signed_duration_since(sdt).num_seconds().max(0)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let exit_code = job.exit_code.unwrap_or(1);
+        let symbol = if exit_code == 0 { "✓" } else { "✗" };
+        println!("{} {} ({} s) – exit {}", symbol, job.name, duration_secs, exit_code);
     }
 
     Ok(first_error.unwrap_or(0))
