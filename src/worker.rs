@@ -1,0 +1,152 @@
+use std::env;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::process::{Command, Stdio};
+
+use serde::Serialize;
+
+use crate::paths::JobPaths;
+
+/// Lightweight metadata structure serialised to JSON once a job finishes.
+#[derive(Serialize)]
+struct Meta<'a> {
+    job: &'a str,
+    cmd: Vec<String>,
+    pid: u32,
+    started: String,
+    ended: String,
+    exit_code: i32,
+}
+
+/// Spawn a detached **worker** process which, in turn, executes the actual
+/// command and records artifacts. This helper is invoked by [`crate::job::do_job`].
+pub(crate) fn spawn_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
+    let exe_path = env::current_exe()?;
+    let mut worker_cmd = Command::new(&exe_path);
+    worker_cmd.arg("worker").arg(job_name).arg("--");
+    worker_cmd.args(cmd);
+
+    // Detach: we do *not* inherit stdin/stdout/stderr to avoid mixing logs.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            worker_cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        worker_cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+
+    worker_cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    worker_cmd.spawn()?;
+    Ok(())
+}
+
+/// Internal function executed by the *worker* sub-command.
+/// Entry point used by the hidden `worker` CLI subcommand.
+pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
+    let paths = JobPaths::new(job_name)?;
+
+    // We'll capture stdout/stderr via pipes so that we can merge them while
+    // still writing dedicated .out / .err files.
+    let started = chrono::Utc::now();
+
+    let mut child_proc = Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // Capture stdout / stderr pipes from the child process.
+    let stdout_pipe = child_proc
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stdout"))?;
+    let stderr_pipe = child_proc
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stderr"))?;
+
+    // Writers for individual streams plus the combined log.
+    let out_file = File::create(&paths.out)?;
+    let err_file = File::create(&paths.err)?;
+    let log_file = File::create(&paths.log)?;
+
+    use std::sync::{Arc, Mutex};
+    let log_shared = Arc::new(Mutex::new(log_file));
+
+    // Helper to spawn one reader thread which streams its input directly to
+    // the corresponding output file *and* the shared combined log file.
+    fn spawn_reader<R: Read + Send + 'static>(
+        reader: R,
+        mut dest_file: File,
+        log_shared: Arc<Mutex<File>>,
+    ) -> std::thread::JoinHandle<io::Result<()>> {
+        std::thread::spawn(move || {
+            let mut buf_reader = std::io::BufReader::new(reader);
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = match buf_reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => return Err(e),
+                };
+
+                dest_file.write_all(&chunk[..n])?;
+                {
+                    let mut log = log_shared.lock().unwrap();
+                    log.write_all(&chunk[..n])?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    let stdout_handle = spawn_reader(stdout_pipe, out_file, Arc::clone(&log_shared));
+    let stderr_handle = spawn_reader(stderr_pipe, err_file, Arc::clone(&log_shared));
+
+    // Wait for the child process to exit *and* for the reader threads to
+    // finish flushing their respective buffers.
+    let status = child_proc.wait()?;
+
+    let join_and_check = |handle: std::thread::JoinHandle<io::Result<()>>| -> io::Result<()> {
+        match handle.join() {
+            Err(join_err) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("log thread panicked: {:?}", join_err),
+            )),
+            Ok(res) => res,
+        }
+    };
+
+    join_and_check(stdout_handle)?;
+    join_and_check(stderr_handle)?;
+
+    let exit_code = status.code().unwrap_or(1);
+    let ended = chrono::Utc::now();
+
+    // Write exit code file.
+    fs::write(&paths.exit, format!("{}\n", exit_code))?;
+
+    // Serialize metadata.
+    let meta = Meta {
+        job: job_name,
+        cmd: cmd.to_vec(),
+        pid: child_proc.id(),
+        started: started.to_rfc3339(),
+        ended: ended.to_rfc3339(),
+        exit_code,
+    };
+    let json = serde_json::to_vec_pretty(&meta)?;
+    fs::write(&paths.meta, json)?;
+
+    Ok(())
+}
