@@ -176,6 +176,7 @@ pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
         .stderr(Stdio::piped())
         .spawn()?;
 
+    // Capture stdout / stderr pipes from the child process.
     let stdout_pipe = child_proc
         .stdout
         .take()
@@ -185,57 +186,69 @@ pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
         .take()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stderr"))?;
 
-    let mut out_file = File::create(&paths.out)?;
-    let mut err_file = File::create(&paths.err)?;
-    let mut log_file = File::create(&paths.log)?;
+    // Writers for individual streams plus the combined log.
+    let out_file = File::create(&paths.out)?;
+    let err_file = File::create(&paths.err)?;
+    let log_file = File::create(&paths.log)?;
 
-    #[derive(Clone, Copy)]
-    enum StreamKind {
-        Stdout,
-        Stderr,
-    }
+    // We share the log file between reader threads behind a `Mutex` so that
+    // writes remain atomic while avoiding an additional in-memory channel.
+    use std::sync::{Arc, Mutex};
+    let log_shared = Arc::new(Mutex::new(log_file));
 
-    use std::sync::mpsc::{self, Sender};
-    let (tx, rx) = mpsc::channel::<(StreamKind, Vec<u8>)>();
+    // Helper to spawn one reader thread which streams its input directly to
+    // the corresponding output file *and* the shared combined log file.
     fn spawn_reader<R: Read + Send + 'static>(
-        kind: StreamKind,
         reader: R,
-        tx: Sender<(StreamKind, Vec<u8>)>,
-    ) {
+        mut dest_file: File,
+        log_shared: Arc<Mutex<File>>,
+    ) -> std::thread::JoinHandle<io::Result<()>> {
         std::thread::spawn(move || {
             let mut buf_reader = std::io::BufReader::new(reader);
-            let mut chunk = [0u8; 4096];
+            let mut chunk = [0u8; 8192];
             loop {
-                match buf_reader.read(&mut chunk) {
+                let n = match buf_reader.read(&mut chunk) {
                     Ok(0) => break, // EOF
-                    Ok(n) => {
-                        tx.send((kind, chunk[..n].to_vec())).ok();
-                    }
-                    Err(_) => break,
+                    Ok(n) => n,
+                    Err(e) => return Err(e),
+                };
+
+                // Write to dedicated stream file.
+                dest_file.write_all(&chunk[..n])?;
+
+                // Write to combined log file, guarding through mutex to avoid
+                // interleaving with the other stream.
+                {
+                    let mut log = log_shared.lock().unwrap();
+                    log.write_all(&chunk[..n])?;
                 }
             }
-        });
+            Ok(())
+        })
     }
 
-    spawn_reader(StreamKind::Stdout, stdout_pipe, tx.clone());
-    spawn_reader(StreamKind::Stderr, stderr_pipe, tx.clone());
+    let stdout_handle = spawn_reader(stdout_pipe, out_file, Arc::clone(&log_shared));
+    let stderr_handle = spawn_reader(stderr_pipe, err_file, Arc::clone(&log_shared));
 
-    drop(tx); // close original sender in parent
-
-    for (kind, chunk) in rx.iter() {
-        match kind {
-            StreamKind::Stdout => {
-                out_file.write_all(&chunk)?;
-                log_file.write_all(&chunk)?;
-            }
-            StreamKind::Stderr => {
-                err_file.write_all(&chunk)?;
-                log_file.write_all(&chunk)?;
-            }
-        }
-    }
-
+    // Wait for the child process to exit *and* for the reader threads to
+    // finish flushing their respective buffers.
     let status = child_proc.wait()?;
+
+    // Propagate any I/O error that might have occurred inside the threads so
+    // that the worker fails hard instead of silently swallowing problems when
+    // writing the artifact files.
+    let join_and_check = |handle: std::thread::JoinHandle<io::Result<()>>| -> io::Result<()> {
+        match handle.join() {
+            Err(join_err) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("log thread panicked: {:?}", join_err),
+            )),
+            Ok(res) => res,
+        }
+    };
+
+    join_and_check(stdout_handle)?;
+    join_and_check(stderr_handle)?;
 
     let exit_code = status.code().unwrap_or(1);
 
