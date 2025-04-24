@@ -384,16 +384,26 @@ impl JobState {
         })
     }
 
-    fn poll(&mut self) -> io::Result<bool> {
+    /// Poll job state once.
+    ///
+    /// Returns `(finished, progress)` where
+    ///  * `finished` signals that the job has terminated (the exit code file
+    ///    is present and has been parsed), and
+    ///  * `progress` is true when new information became available during
+    ///    this poll iteration, i.e. freshly read log output or a newly
+    ///    discovered exit code. This is used by the caller to implement an
+    ///    exponential back-off strategy – if no job makes progress we can
+    ///    afford to sleep a little longer before the next poll.
+    fn poll(&mut self) -> io::Result<(bool /* finished */, bool /* progress */)> {
         // Helper closure for reading new chunk from log file.
-        let read_log = |path: &Path, offset: &mut u64| -> io::Result<()> {
+        let read_log = |path: &Path, offset: &mut u64| -> io::Result<bool> {
             if !path.exists() {
-                return Ok(());
+                return Ok(false);
             }
 
             let size = fs::metadata(path)?.len();
             if size <= *offset {
-                return Ok(());
+                return Ok(false);
             }
 
             let mut file = File::open(path)?;
@@ -414,18 +424,18 @@ impl JobState {
                 io::stdout().flush()?;
             }
 
-            Ok(())
+            Ok(!buffer.is_empty())
         };
-
-        read_log(&self.log_path, &mut self.log_offset)?;
+        let mut progress = read_log(&self.log_path, &mut self.log_offset)?;
 
         // Check exit code.
         if self.exit_code.is_none() && self.exit_path.exists() {
             let code_str = fs::read_to_string(&self.exit_path)?.trim().to_string();
             self.exit_code = code_str.parse::<i32>().ok();
+            progress = true;
         }
 
-        Ok(self.exit_code.is_some())
+        Ok((self.exit_code.is_some(), progress))
     }
 }
 
@@ -452,7 +462,15 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
     let mut remaining = jobs.len();
     let mut first_error: Option<i32> = None;
 
+    // Start with a small delay and exponentially back off up to a sensible
+    // upper bound when no job produces output or finishes.
+    let base_delay = std::time::Duration::from_millis(50);
+    let max_delay = std::time::Duration::from_secs(2);
+    let mut current_delay = base_delay;
+
     while remaining > 0 {
+        let mut any_progress = false;
+
         for job in &mut jobs {
             if job.exit_code.is_some()
                 && job.log_offset == fs::metadata(&job.log_path).map(|m| m.len()).unwrap_or(0)
@@ -461,7 +479,11 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
                 continue;
             }
 
-            let finished = job.poll()?;
+            let (finished, progress) = job.poll()?;
+            if progress {
+                any_progress = true;
+            }
+
             if finished {
                 if let Some(code) = job.exit_code {
                     if code != 0 && first_error.is_none() {
@@ -478,13 +500,19 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
             .count();
 
         if remaining > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            // Reset delay on any progress; otherwise back off (capped).
+            if any_progress {
+                current_delay = base_delay;
+            } else {
+                current_delay = std::cmp::min(current_delay * 2, max_delay);
+            }
+            std::thread::sleep(current_delay);
         }
     }
 
     // Ensure we drained final output.
     for job in &mut jobs {
-        job.poll()?;
+        let _ = job.poll()?; // drain any remaining output
     }
 
     // After all jobs finished, print a concise summary line per job.
