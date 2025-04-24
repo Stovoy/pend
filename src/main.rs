@@ -45,7 +45,19 @@ enum Commands {
     },
 }
 
-fn main() -> io::Result<()> {
+// We keep a small wrapper around the previous `main` body so we can format
+// errors consistently. Any `io::Error` bubbling up from helper functions is
+// intercepted and rendered via its Display implementation instead of the
+// rather noisy Debug representation used by Rust’s default panic hook.
+fn main() {
+    if let Err(err) = try_main() {
+        // Use Display, not Debug, for a concise human-friendly message.
+        eprintln!("Error: {}", err);
+        std::process::exit(1);
+    }
+}
+
+fn try_main() -> io::Result<()> {
     let cli = Cli::parse();
 
     // If a custom directory is given, export it so that library helpers and
