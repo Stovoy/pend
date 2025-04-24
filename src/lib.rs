@@ -95,9 +95,23 @@ fn spawn_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
         }
     }
 
+    // On Windows, ensure the worker runs in its own process group so that
+    // Ctrl-C sent to the parent does not propagate to the child.  This mirrors
+    // the `setsid()` call on Unix above.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Flag documented at <https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags>
+        // and exposed through `CommandExt::creation_flags`.
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+        // Safety: merely sets a documented creation flag – no unsafe block
+        // required.
+        worker_cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+
     worker_cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
 
-    // On Windows, start_new_session is available from Rust 1.63+.
     worker_cmd.spawn()?;
     Ok(())
 }
