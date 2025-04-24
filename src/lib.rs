@@ -4,22 +4,25 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
+
 use serde::Serialize;
 
 /// Return the directory into which all job artifacts are written.
 ///
 /// Users can override the default temporary location by setting the
 /// `PEND_DIR` environment variable.
-pub fn jobs_root() -> PathBuf {
+/// Determine the directory into which all job artifacts are written and ensure
+/// that it exists on the file system.
+pub fn jobs_root() -> io::Result<PathBuf> {
     if let Ok(p) = env::var("PEND_DIR") {
         let path = PathBuf::from(p);
-        fs::create_dir_all(&path).ok();
-        path
+        fs::create_dir_all(&path)?;
+        Ok(path)
     } else {
         let mut dir = env::temp_dir();
         dir.push("pend");
-        fs::create_dir_all(&dir).ok();
-        dir
+        fs::create_dir_all(&dir)?;
+        Ok(dir)
     }
 }
 
@@ -34,15 +37,15 @@ struct JobPaths {
 }
 
 impl JobPaths {
-    fn new(job_name: &str) -> Self {
-        let root = jobs_root();
-        Self {
+    fn new(job_name: &str) -> io::Result<Self> {
+        let root = jobs_root()?;
+        Ok(Self {
             out: root.join(format!("{}.out", job_name)),
             err: root.join(format!("{}.err", job_name)),
             exit: root.join(format!("{}.exit", job_name)),
             meta: root.join(format!("{}.json", job_name)),
             log: root.join(format!("{}.log", job_name)),
-        }
+        })
     }
 
     fn any_exist(&self) -> bool {
@@ -130,7 +133,7 @@ pub fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "command cannot be empty"));
     }
 
-    let paths = JobPaths::new(job_name);
+    let paths = JobPaths::new(job_name)?;
     if paths.any_exist() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -145,7 +148,7 @@ pub fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
 /// Entry point used by the hidden `worker` CLI subcommand. Not considered part
 /// of the stable public API but exported so the binary can invoke it.
 pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
-    let paths = JobPaths::new(job_name);
+    let paths = JobPaths::new(job_name)?;
 
 
     // We'll capture stdout/stderr via pipes so that we can merge them while
@@ -245,7 +248,7 @@ pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
 /// Wait for the given job to finish and replay its captured logs to the
 /// current stdout/stderr. Returns the job's exit code.
 fn wait_single(job_name: &str) -> io::Result<i32> {
-    let paths = JobPaths::new(job_name);
+    let paths = JobPaths::new(job_name)?;
 
     // The worker process may not have had a chance to create its artifact
     // files yet when `pend wait` is invoked immediately after `pend do`.
@@ -354,17 +357,17 @@ struct JobState {
 }
 
 impl JobState {
-    fn new(name: &str, color: &'static str) -> Self {
+    fn new(name: &str, color: &'static str) -> io::Result<Self> {
         let effective_color = if colors_enabled() { color } else { "" };
-        let paths = JobPaths::new(name);
-        Self {
+        let paths = JobPaths::new(name)?;
+        Ok(Self {
             name: name.to_string(),
             log_path: paths.log,
             exit_path: paths.exit,
             log_offset: 0,
             exit_code: None,
             color: effective_color,
-        }
+        })
     }
 
     fn poll(&mut self) -> io::Result<bool> {
@@ -420,7 +423,7 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
         .map(|(idx, name)| {
             JobState::new(name, COLOR_CODES[idx % COLOR_CODES.len()])
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Ensure all jobs have started; otherwise return error early.
     for job in &jobs {
@@ -472,7 +475,7 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
 
     // After all jobs finished, print a concise summary line per job.
     for job in &jobs {
-        let meta_path = JobPaths::new(&job.name).meta;
+        let meta_path = JobPaths::new(&job.name)?.meta;
         let duration_secs = if let Ok(meta_bytes) = fs::read(&meta_path) {
             if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_bytes) {
                 let started = meta_json.get("started").and_then(|v| v.as_str());
