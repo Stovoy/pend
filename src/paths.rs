@@ -37,7 +37,7 @@ pub(crate) struct JobPaths {
 impl JobPaths {
     pub(crate) fn new(job_name: &str) -> io::Result<Self> {
         let root = jobs_root()?;
-        Ok(Self {
+        let paths = Self {
             out: root.join(format!("{}.out", job_name)),
             err: root.join(format!("{}.err", job_name)),
             exit: root.join(format!("{}.exit", job_name)),
@@ -45,7 +45,44 @@ impl JobPaths {
             log: root.join(format!("{}.log", job_name)),
             lock: root.join(format!("{}.lock", job_name)),
             signal: root.join(format!("{}.signal", job_name)),
-        })
+        };
+
+        paths.assert_paths_within_limit()?;
+
+        Ok(paths)
+    }
+
+    /// On construction verify that none of the artifact paths exceeds the
+    /// platform‐specific absolute path length limit to avoid cryptic I/O
+    /// errors later when we attempt to create the files.
+    fn assert_paths_within_limit(&self) -> io::Result<()> {
+        #[cfg(windows)]
+        const MAX_PATH: usize = 260; // classical Win32 MAX_PATH
+        #[cfg(unix)]
+        const MAX_PATH: usize = 4096; // typical PATH_MAX on Linux/Unix
+
+        for path in [
+            &self.out,
+            &self.err,
+            &self.exit,
+            &self.meta,
+            &self.log,
+            &self.lock,
+            &self.signal,
+        ] {
+            if let Some(s) = path.to_str() {
+                if s.len() >= MAX_PATH {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "artifact path exceeds OS limit ({} > {}): {}",
+                            s.len(), MAX_PATH, s
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn any_exist(&self) -> bool {
