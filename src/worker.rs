@@ -120,12 +120,39 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
     // Dedicated writer thread which owns the combined log file handle.
+    // Read max log size from environment once.
+    let max_log_size = std::env::var("PEND_MAX_LOG_SIZE").ok().and_then(|v| v.parse::<u64>().ok());
+
     let log_handle = {
         let log_path_clone = paths.log.clone();
         std::thread::spawn(move || -> io::Result<()> {
             let mut log_file = File::create(&log_path_clone)?;
+            let mut current_len: u64 = 0;
+            if let Ok(meta) = log_file.metadata() {
+                current_len = meta.len();
+            }
+
             while let Ok(chunk) = rx.recv() {
+                if let Some(limit) = max_log_size {
+                    if current_len + chunk.len() as u64 > limit {
+                        // Rotate: rename current file to .log.1, ignoring errors.
+                        let rotated = log_path_clone.with_file_name(format!(
+                            "{}.1",
+                            log_path_clone
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .to_string()
+                        ));
+                        let _ = std::fs::rename(&log_path_clone, &rotated);
+                        // Start new file.
+                        log_file = File::create(&log_path_clone)?;
+                        current_len = 0;
+                    }
+                }
+
                 log_file.write_all(&chunk)?;
+                current_len += chunk.len() as u64;
             }
             Ok(())
         })

@@ -12,6 +12,44 @@ use job::do_job;
 use wait::wait_jobs;
 use worker::run_worker;
 
+// -------------------------------------------------------------------------
+// Helper parsing human-readable size strings like "10M" or "512K" to bytes.
+// -------------------------------------------------------------------------
+
+fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("size string is empty".into());
+    }
+
+    let mut num_part = String::new();
+    let mut unit_part = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            if !unit_part.is_empty() {
+                return Err("invalid size string".into());
+            }
+            num_part.push(c);
+        } else {
+            unit_part.push(c);
+        }
+    }
+
+    let base: u64 = num_part
+        .parse()
+        .map_err(|_| "invalid numeric component in size string")?;
+
+    let multiplier = match unit_part.to_ascii_uppercase().as_str() {
+        "" => 1,
+        "K" | "KB" => 1 << 10,
+        "M" | "MB" => 1 << 20,
+        "G" | "GB" => 1 << 30,
+        _ => return Err("unknown size unit".into()),
+    };
+
+    Ok(base * multiplier)
+}
+
 /// do now, wait later – a tiny job runner
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -24,6 +62,12 @@ struct Cli {
     /// the `NO_COLOR` environment variable when supplied.
     #[arg(long, global = true)]
     no_color: bool,
+
+    /// Rotate the combined `.log` file once its size exceeds the given limit
+    /// (e.g. `10M`, `500K`). The current log becomes `<job>.log.1` and a new
+    /// file is started.
+    #[arg(long, value_name = "SIZE", global = true)]
+    max_log_size: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -79,6 +123,12 @@ fn try_main() -> io::Result<()> {
     // the same preference.
     if cli.no_color {
         std::env::set_var("NO_COLOR", "1");
+    }
+
+    // Export maximum log size (in bytes) for worker processes.
+    if let Some(size_str) = &cli.max_log_size {
+        let bytes = parse_size(size_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        std::env::set_var("PEND_MAX_LOG_SIZE", bytes.to_string());
     }
 
     match cli.command {
