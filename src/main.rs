@@ -127,7 +127,8 @@ fn try_main() -> io::Result<()> {
 
     // Export maximum log size (in bytes) for worker processes.
     if let Some(size_str) = &cli.max_log_size {
-        let bytes = parse_size(size_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let bytes =
+            parse_size(size_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         std::env::set_var("PEND_MAX_LOG_SIZE", bytes.to_string());
     }
 

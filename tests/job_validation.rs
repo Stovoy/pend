@@ -1,12 +1,11 @@
-use assert_cmd::prelude::*;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 // Helper to invoke compiled `pend` binary with a temporary jobs directory.
-fn pend_with_tmp() -> (TempDir, assert_cmd::Command) {
+fn pend_with_tmp() -> (TempDir, Command) {
     let tmp = TempDir::new().expect("create tempdir");
-    let mut cmd = assert_cmd::Command::cargo_bin("pend").expect("binary exists");
+    let mut cmd = Command::cargo_bin("pend").expect("binary exists");
     cmd.env("PEND_DIR", tmp.path());
     (tmp, cmd)
 }

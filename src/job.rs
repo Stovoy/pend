@@ -1,8 +1,8 @@
 use std::io;
 
 use crate::paths::JobPaths;
-use std::fs::OpenOptions;
 use fs2::FileExt;
+use std::fs::OpenOptions;
 
 /// Public helper equivalent to `pend do <job> <cmd …>`.
 pub(crate) fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
@@ -96,6 +96,7 @@ pub(crate) fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
     let lock_file = OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&paths.lock)?;
 
     if let Err(err) = lock_file.try_lock_exclusive() {

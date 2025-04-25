@@ -72,6 +72,7 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     let lock_file = OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&paths.lock)?;
 
     if let Err(err) = lock_file.try_lock_exclusive() {
@@ -121,7 +122,9 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
 
     // Dedicated writer thread which owns the combined log file handle.
     // Read max log size from environment once.
-    let max_log_size = std::env::var("PEND_MAX_LOG_SIZE").ok().and_then(|v| v.parse::<u64>().ok());
+    let max_log_size = std::env::var("PEND_MAX_LOG_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
 
     let log_handle = {
         let log_path_clone = paths.log.clone();
@@ -138,11 +141,7 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
                         // Rotate: rename current file to .log.1, ignoring errors.
                         let rotated = log_path_clone.with_file_name(format!(
                             "{}.1",
-                            log_path_clone
-                                .file_name()
-                                .unwrap()
-                                .to_string_lossy()
-                                .to_string()
+                            log_path_clone.file_name().unwrap().to_string_lossy()
                         ));
                         let _ = std::fs::rename(&log_path_clone, &rotated);
                         // Start new file.

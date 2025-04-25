@@ -1,6 +1,6 @@
+use anstyle::{AnsiColor, Color, Style};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use anstyle::{AnsiColor, Style, Color};
 
 fn color_style(idx: usize) -> Style {
     let color = match idx % 6 {
@@ -156,11 +156,7 @@ struct JobState {
 
 impl JobState {
     fn new(name: &str, style: anstyle::Style) -> io::Result<Self> {
-        let style_opt = if colors_enabled() {
-            Some(style)
-        } else {
-            None
-        };
+        let style_opt = if colors_enabled() { Some(style) } else { None };
         let paths = JobPaths::new(name)?;
         Ok(Self {
             name: name.to_string(),

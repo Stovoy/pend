@@ -76,7 +76,9 @@ impl JobPaths {
                         io::ErrorKind::InvalidInput,
                         format!(
                             "artifact path exceeds OS limit ({} > {}): {}",
-                            s.len(), MAX_PATH, s
+                            s.len(),
+                            MAX_PATH,
+                            s
                         ),
                     ));
                 }
