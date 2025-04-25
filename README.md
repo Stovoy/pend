@@ -83,6 +83,25 @@ path supplied via `--dir` / `PEND_DIR`).  Files follow the predictable pattern
 All artefacts are plain text or JSON so you can inspect them with standard
 tools (`cat`, `jq`, PowerShell, etc.) without special tooling.
 
+### Platform quirks
+
+`pend` aims to behave the same everywhere, yet operating systems have their
+own intricacies worth noting:
+
+* **macOS** – `$TMPDIR` on macOS is typically a *symbolic link* into
+  `/var/folders/...`.  `pend` follows the symlink transparently, but if you
+  inspect the jobs directory manually you might see the resolved real path
+  instead of the short `/tmp/pend` style path used on Linux.
+
+* **Windows path length** – Traditional Win32 APIs impose the infamous
+  `MAX_PATH == 260` character limit.  When constructing the artefact paths the
+  binary verifies the absolute length and returns a clear error if an
+  individual file would exceed the limit.
+
+* **Unix signals** – On Unix-like systems an extra `<job>.signal` file records
+  the raw signal number if the process terminated due to a signal.  This file
+  is not present on Windows.
+
 ## Feature highlights
 
 * Zero runtime dependencies – statically linked Rust binary.
