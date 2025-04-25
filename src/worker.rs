@@ -1,8 +1,8 @@
 //! Detached background process launched by `pend do`.
 //!
 //! A *worker* has exactly one job: run the user command in a sub‐process and
-//! persist all relevant artefacts (logs, exit code, metadata) in the jobs
-//! directory.  It is intentionally kept small and free of complex control
+//! persist all relevant artifacts (logs, exit code, metadata) in the jobs
+//! directory. It is intentionally kept small and free of complex control
 //! flow so that crashes and panics are extremely unlikely – the parent
 //! assumes that once the worker was spawned successfully it will either run
 //! to completion or be terminated by the operating system.
@@ -175,7 +175,7 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     };
 
     // Helper spawning one reader thread per pipe that forwards bytes to the
-    // per-stream artefact file and to the shared channel.
+    // per-stream artifact file and to the shared channel.
     fn spawn_reader<R: Read + Send + 'static>(
         reader: R,
         mut dest_file: File,
@@ -210,7 +210,7 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     // Determine a portable numeric exit code.
     //
     // On Unix-like systems a process that terminates due to a signal does
-    // not have a conventional exit status.  The idiomatic convention used
+    // not have a conventional exit status. The idiomatic convention used
     // by many tools (bash, coreutils, git, etc.) is to report *128 + signal*.
     // Capturing this information allows the parent `pend wait` invocation to
     // faithfully propagate failure causes such as SIGKILL or SIGTERM.

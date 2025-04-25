@@ -1,124 +1,122 @@
-# pend
+# pend – do now, wait later 🕒
 
-`pend` is a tiny, cross‑platform command‑line tool that gives you two primitives – **pend do** and **pend wait** – to sprinkle safe, parallel execution into any shell script or CI job.
-
-The idea is deceptively simple: *do now, wait later.*
-
-## Why does this exist?
-
-More than a decade ago, while speeding up build pipelines at Nextdoor, I realised there was no light‑weight way to:
-
-1. Kick off an arbitrary shell command in the background.
-2. Capture its standard output, standard error, exit code, and metadata in a predictable place.
-3. Later – in any order – block on that specific job, replay its logs, and propagate its exit status.
-
-GNU parallel, `xargs ‑P`, `make ‑j`, and full‑blown build systems solve adjacent problems but come with heavy assumptions, noisy interleaved logs, or the need to formalise an entire dependency graph. For scripting one‑offs and mid‑sized projects, the original **do/wait** bash duo was the sweet spot. `pend` is that idea rewritten in Rust, packaged as an installable binary, and ready for Windows, macOS, and Linux.
-
-## The mental model
+`pend` is a **tiny cross-platform job runner** that lets you fire-and-forget
+processes *now* and deal with their output *later* – all while keeping logs
+tidy, exit statuses intact, and your shell scripts blissfully simple.
 
 ```
-pend do <job‑name> <command> [arg …]
-```
-
-• Spawns `<command>` in the background.
-• Streams stdout & stderr into `<jobs‑dir>/<job‑name>.out` and `.err`.
-• Stores the process's exit code in `<job‑name>.exit` once it finishes.
-• Writes a tiny JSON/YAML meta file with start/end timestamps and the child PID.
-
-```
-pend wait <job‑name>
-```
-
-• Blocks until the job completes (if it hasn't already).
-• Replays the captured output to your terminal in original order.
-• Exits with the same exit code your job produced.
-
-That's it – an effective job queue & log collector in two subcommands.
-
-## Quick start
-
-```bash
-# 1. Install (once cargo is published)
-cargo install pend
-
-# 2. Parallelise your build script
+# Run two jobs in parallel …
 pend do backend ./scripts/build_backend.sh
 pend do frontend ./scripts/build_frontend.sh
 
-# Wait for them to finish - non-zero exitcodes are bubbled up
-pend wait backend
-pend wait frontend
-# Or: `pend wait backend frontend` to stream and interleave output 
+# … wait for them whenever you want (combined coloured output!)
+pend wait backend frontend
 
-# Continue only if both succeed
-pend do package ./scripts/package.sh
-pend wait package
+# Clean up once you are done
+pend clean --all
 ```
 
-### Output location
-
-By default, `pend` stores job artifacts in a temporary directory specific to your system (such as `/tmp/pend/` on Unix-like systems or the appropriate temp folder on Windows).
-
-Set `--dir` or environment variable `PEND_DIR` to relocate them to a custom location.
-
-### What exactly gets written to disk?
-
-Every job lives exclusively in the *jobs directory* (the temp folder or the
-path supplied via `--dir` / `PEND_DIR`).  Files follow the predictable pattern
-
-```
-<job-name>.<extension>
-```
-
-| Extension | Always present | Description |
-|-----------|----------------|-------------|
-| `.out`    | yes  | Raw **stdout** of the command, exactly as emitted – useful for tools that expect plain text files. |
-| `.err`    | yes  | Raw **stderr** of the command. |
-| `.log`    | yes  | A **combined** (`stdout` + `stderr`) stream in chronological order. When `--max-log-size` is in effect the file is rotated to `.log.1` once it exceeds the requested size. |
-| `.exit`   | yes  | Single line containing the numeric **exit code** written *before* the worker closes any log files so that `pend wait` can finish even when the worker crashes immediately afterwards. |
-| `.json`   | yes  | Human-readable **metadata** (pretty-printed JSON) with the exact command line, child PID, UTC timestamps (`started`, `ended`), and the final exit code. |
-| `.signal` | Unix only &nbsp; | When the process terminates because of a signal the raw signal number is persisted here.  The exit status reported via `.exit` adheres to the convention `128 + signal`. |
-| `.lock`   | internal        | Advisory file-lock guard to prevent two `pend do` invocations from using the same job name concurrently.  Can be deleted safely while no job is running. |
-
-All artefacts are plain text or JSON so you can inspect them with standard
-tools (`cat`, `jq`, PowerShell, etc.) without special tooling.
-
-### Platform quirks
-
-`pend` aims to behave the same everywhere, yet operating systems have their
-own intricacies worth noting:
-
-* **macOS** – `$TMPDIR` on macOS is typically a *symbolic link* into
-  `/var/folders/...`.  `pend` follows the symlink transparently, but if you
-  inspect the jobs directory manually you might see the resolved real path
-  instead of the short `/tmp/pend` style path used on Linux.
-
-* **Windows path length** – Traditional Win32 APIs impose the infamous
-  `MAX_PATH == 260` character limit.  When constructing the artefact paths the
-  binary verifies the absolute length and returns a clear error if an
-  individual file would exceed the limit.
-
-* **Unix signals** – On Unix-like systems an extra `<job>.signal` file records
-  the raw signal number if the process terminated due to a signal.  This file
-  is not present on Windows.
-
-## Feature highlights
-
-* Zero runtime dependencies – statically linked Rust binary.
-* Named jobs & clean artifacts make failures easy to diagnose.
-* Runs anywhere Rust runs: Windows, macOS, Linux (x86‑64, aarch64, etc).
-* Safe exit‑status propagation – your CI fails when your job fails.
-* Opt‑in streaming: you decide when output is surfaced.
-
-## Prior art & inspiration
-
-* The original `do` / `wait` bash scripts (2012).
-* `GNU parallel`, `xargs ‑P` – great for lists, cumbersome for structured builds.
-* `make ‑j`, `ninja`, `bazel` – heavyweight graphs, noisy logs.
-* `taskwarrior`, `just`, `cargo‑make` – oriented around declarative recipes.
-
-`pend` fills the tiny but mighty niche in between.
+Why wrestle with `&`, `wait`, and brittle `tee` pipelines when **one binary**
+does all the heavy lifting for you?
 
 ---
 
-Made with ❤️ & Rust so you can do now, wait later.
+## 📦  Installation
+
+```bash
+cargo install pend      # Rust way – zero dependencies
+# or grab a pre-built release asset from GitHub
+```
+
+The crate is 100 % Rust, no native libraries, so a static binary drops out on
+all tier-1 platforms (Windows / macOS / Linux – x86-64 & aarch64).
+
+---
+
+## 🧠  Mental model
+
+| Command | What it does |
+|---------|--------------|
+| `pend do <job> <cmd …>` | Launches `<cmd>` detached in the background. Captures its stdout, stderr, exit code, metadata, _and_ a combined `.log` stream. |
+| `pend wait <job …>`     | Blocks until the supplied job(s) finish. Streams their output in the original order and exits with the very same code the first failing job produced. |
+| `pend clean [--all \| <job …>]` | Deletes artifacts to free disk space. Skips jobs that are still running. |
+| `pend tui`              | Opens a super-lightweight TUI that auto-refreshes and shows a live list of all jobs (press `q` to quit). |
+
+That’s the entire user-facing surface – **four deliberately boring verbs**.
+
+---
+
+## ✨  What you get – out of the box
+
+• **Structured artifacts** – every job yields predictable files: `.out`, `.err`, `.log`, `.exit`, `.json`, `.signal` (Unix) – all plain text or JSON.
+
+• **Crash-safe exit codes** – the `.exit` marker is written _before_ log pipes are closed so `pend wait` never hangs on a half-dead worker.
+
+• **Coloured multi-job output** – `pend wait a b c` interleaves logs with deterministic colours and clear ✓ / ✗ status lines.
+
+• **Size-bounded log rotation** – `--max-log-size 10M` keeps CI artifacts small yet complete.
+
+• **Strong validation & security** – path traversal is impossible, job names are capped at 100 characters, and an advisory `.lock` prevents concurrent duplicates.
+
+• **Platform quirks handled** – symlink tmpdirs on macOS, `MAX_PATH` on Windows, signals on Unix – tested on all three major OSes in CI.
+
+• **Single static binary** – integrates into any Bash / PowerShell / CMD script without pulling in a runtime.
+
+---
+
+## 🔍  Artifact layout
+
+Jobs live in a single directory (defaults to `$TMPDIR/pend`, override via
+`--dir` or `PEND_DIR`).  Files follow `<job>.<ext>`:
+
+| File               | Purpose |
+|--------------------|---------|
+| `foo.out` / `foo.err` | Raw stdout / stderr as produced. |
+| `foo.log` (+ `.log.1` …) | Chronological merged log (rotated). |
+| `foo.exit`         | Numeric exit code written first. |
+| `foo.json`         | Pretty-printed metadata (command, PID, UTC timestamps). |
+| `foo.signal` (Unix) | Raw signal number, if any. |
+| `foo.lock`         | Advisory lock file; safe to delete when the job is not running. |
+
+Everything is human-readable → `cat`, `jq`, or even Notepad work fine.
+
+---
+
+## 🚀  Example: parallel build & package
+
+```bash
+# Kick off long-running tasks
+pend do backend docker build .
+pend do frontend npm run build
+
+# Meanwhile run unit tests …
+pytest -q
+
+# Stream & fail fast once the first build fails
+pend wait backend frontend
+
+# Package artifacts only if both succeeded
+pend do package ./scripts/package.sh
+pend wait package
+
+# Upload artifacts, then clean workspace
+pend clean package
+```
+
+---
+
+## 🛠  Under the hood
+
+* **Worker process** – spawns child cmd, merges pipes via channel fan-in, writes JSON, exits.
+* **File watcher** – `pend wait` uses the cross-platform `notify` crate for instant `.exit` detection; falls back to exponential back-off polling if necessary.
+* **No async runtime** – plain threads & channels keep the binary small (< 1 MiB on Linux/musl).
+
+---
+
+## 📚 Prior art
+
+`GNU parallel`, `xargs -P`, `make -j`, `ninja`, `taskwarrior`, `just`, `cargo-make` … all wonderful – yet none hit the sweet spot of *ad-hoc, nameable, parallel shell jobs with deterministic logs*.  **pend** does.
+
+---
+
+Made with ❤️ & Rust – so you can **do now, wait later**.

@@ -1,13 +1,13 @@
 //! Implementation of the `pend wait` sub-command.
 //!
 //! Waiting can target *one* job (simpler code path) or *multiple* jobs at
-//! once.  In the latter case the module prints coloured, interleaved output
+//! once. In the latter case the module prints coloured, interleaved output
 //! very similar to what `cargo test -- --nocapture` does so that users can
 //! follow progress in real time.
 //!
 //! Efficiency considerations:
 //!   • We try to employ the cross-platform [`notify`] crate for near-instant
-//!     detection of the `.exit` marker file.  When the watcher cannot be
+//!     detection of the `.exit` marker file. When the watcher cannot be
 //!     initialised we degrade gracefully to exponential back-off polling.
 //!   • For multi-job waits we keep each job's current read position and only
 //!     tail the delta since the previous iteration which avoids re-reading
@@ -32,7 +32,7 @@ fn color_style(idx: usize) -> Style {
 }
 
 // For efficient change detection we attempt to use a platform file watcher at
-// runtime.  When that fails (e.g. unsupported platform or too many open
+// runtime. When that fails (e.g. unsupported platform or too many open
 // descriptors) we transparently fall back to the previous exponential back-
 // off polling loop so behaviour remains correct albeit slightly less
 // efficient.
@@ -74,7 +74,7 @@ fn wait_single(job_name: &str) -> io::Result<i32> {
 
     if !paths.exit.exists() {
         // First try the fast/efficient path: a platform specific file
-        // watcher.  When that fails we degrade gracefully to the old
+        // watcher. When that fails we degrade gracefully to the old
         // exponential–back-off polling implementation so correctness is
         // unaffected.
 

@@ -7,12 +7,12 @@
 //!     so that the rest of the code base can assume well-formed names.
 //! 2.  Perform an advisory lock on a sidecar `.lock` file to prevent two
 //!     concurrent `pend do` invocations from racing on the same job.
-//! 3.  Abort early if artefacts for that job already exist.
+//! 3.  Abort early if artifacts for that job already exist.
 //! 4.  Finally spawn the background *worker* process via
 //!     [`crate::worker::spawn_worker`].
 //!
 //! The heavy lifting – capturing stdout/stderr, log rotation, metadata – is
-//! handled inside `worker.rs`.  Keeping the synchronous "front door" logic in
+//! handled inside `worker.rs`. Keeping the synchronous "front door" logic in
 //! a dedicated module clarifies the control flow.
 use std::io;
 
@@ -71,7 +71,7 @@ pub(crate) fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
             c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
         } else {
             // Non-ASCII characters are permitted as long as the overall
-            // string is NFC.  We accept any non-control Unicode scalar.
+            // string is NFC. We accept any non-control Unicode scalar.
             !c.is_control()
         }
     }) {

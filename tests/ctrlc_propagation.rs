@@ -1,5 +1,5 @@
 //! Test that aborting a `pend wait` invocation (simulating the user pressing
-//! Ctrl-C) **does not** terminate the underlying worker process.  The parent
+//! Ctrl-C) **does not** terminate the underlying worker process. The parent
 //! `pend wait` process should exit quickly while the detached worker keeps
 //! running and ultimately finishes the job.
 
@@ -30,7 +30,7 @@ fn ctrlc_does_not_kill_worker() {
     let job = "longrun";
 
     // Start a job that takes noticeable time so we can interrupt the waiter
-    // before it finishes.  Using `bash` is fine – the other integration tests
+    // before it finishes. Using `bash` is fine – the other integration tests
     // rely on it as well and it is present in the GitHub Actions images for
     // all target platforms.
     pend_cmd
@@ -58,7 +58,7 @@ fn ctrlc_does_not_kill_worker() {
     // Give the waiter a brief moment to attach.
     thread::sleep(Duration::from_millis(100));
 
-    // Simulate Ctrl-C.  On Unix we explicitly send SIGINT.  On other
+    // Simulate Ctrl-C. On Unix we explicitly send SIGINT. On other
     // platforms fall back to forcibly killing the process which is good
     // enough for our purposes: only the *wait* process must die, the detached
     // worker must keep running.
@@ -85,9 +85,9 @@ fn ctrlc_does_not_kill_worker() {
     assert!(!exit_path.exists(), "job unexpectedly finished early");
 
     // Now invoke a fresh `pend wait` and expect it to replay the full output
-    // once the worker completes.  This also implicitly verifies that the
+    // once the worker completes. This also implicitly verifies that the
     // worker continued running despite the earlier abort.
-    // Replay the job.  The *content* of the log produced after the first
+    // Replay the job. The *content* of the log produced after the first
     // marker is not guaranteed because the worker writes the `.exit` marker
     // *before* finishing the final log flush (see worker.rs for details).
     // We therefore only verify that the second wait succeeds and returns

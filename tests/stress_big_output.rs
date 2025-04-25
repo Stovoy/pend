@@ -1,5 +1,5 @@
 //! Stress test: ensures pend can handle >=100 MB combined stdout+stderr without
-//! dead-locking or truncating output.  Uses an inline Python helper script so
+//! dead-locking or truncating output. Uses an inline Python helper script so
 //! the workload is portable across Unix and Windows GitHub runners (Python is
 //! preinstalled on all images).
 
