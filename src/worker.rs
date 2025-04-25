@@ -227,6 +227,10 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
         }
     };
 
+    // Write the exit code as early as possible so that `pend wait` does not
+    // block indefinitely if we crash while flushing logs.
+    fs::write(&paths.exit, format!("{}\n", exit_code))?;
+
     let join_and_check = |handle: std::thread::JoinHandle<io::Result<()>>| -> io::Result<()> {
         match handle.join() {
             Err(join_err) => Err(io::Error::new(
@@ -244,9 +248,6 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     join_and_check(log_handle)?;
 
     let ended = chrono::Utc::now();
-
-    // Write exit code file.
-    fs::write(&paths.exit, format!("{}\n", exit_code))?;
 
     // Serialize metadata.
     let meta = Meta {
