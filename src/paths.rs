@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// `PEND_DIR` environment variable.
 /// Determine the directory into which all job artifacts are written and ensure
 /// that it exists on the file system.
-fn jobs_root() -> io::Result<PathBuf> {
+pub(crate) fn jobs_root() -> io::Result<PathBuf> {
     if let Ok(p) = env::var("PEND_DIR") {
         let path = PathBuf::from(p);
         fs::create_dir_all(&path)?;

@@ -95,6 +95,18 @@ enum Commands {
         #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
     },
+
+    /// Remove job artifacts to free up disk space
+    Clean {
+        /// Delete *all* artifacts inside the jobs directory. Cannot be used
+        /// together with individual job names.
+        #[arg(long)]
+        all: bool,
+
+        /// One or more job names whose artifacts should be removed.
+        #[arg(value_name = "JOB", required_unless_present = "all")]
+        jobs: Vec<String>,
+    },
 }
 
 // We keep a small wrapper around the previous `main` body so we can format
@@ -139,5 +151,68 @@ fn try_main() -> io::Result<()> {
             std::process::exit(code);
         }
         Commands::Worker { job_name, cmd } => run_worker(&job_name, &cmd),
+
+        Commands::Clean { all, jobs } => {
+            use crate::paths::jobs_root;
+            use std::fs;
+
+            let root = jobs_root()?;
+
+            // Build list of jobs to remove.
+            let targets: Vec<String> = if all {
+                // Any file with a known extension indicates presence of a job
+                let mut set = std::collections::HashSet::new();
+                if let Ok(entries) = fs::read_dir(&root) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            // Strip extension.
+                            if let Some((job, ext)) = name.rsplit_once('.') {
+                                if matches!(ext, "out" | "err" | "log" | "exit" | "json" | "signal" | "lock")
+                                {
+                                    set.insert(job.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                set.into_iter().collect()
+            } else {
+                jobs
+            };
+
+            if targets.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "no jobs to clean – use --all or supply at least one job name",
+                ));
+            }
+
+            for job in &targets {
+                let paths = crate::paths::JobPaths::new(job)?;
+                // Skip deletion if lock file exists and is locked (job running).
+                if paths.lock.exists() {
+                    use fs2::FileExt;
+                    if let Ok(file) = fs::OpenOptions::new().read(true).open(&paths.lock) {
+                        if file.try_lock_exclusive().is_err() {
+                            eprintln!("warning: job '{job}' appears to be running – skipping");
+                            continue;
+                        }
+                    }
+                }
+
+                for p in [
+                    &paths.out,
+                    &paths.err,
+                    &paths.log,
+                    &paths.exit,
+                    &paths.meta,
+                    &paths.signal,
+                    &paths.lock,
+                ] {
+                    let _ = fs::remove_file(p);
+                }
+            }
+            Ok(())
+        }
     }
 }
