@@ -205,31 +205,31 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
 
-    let exit_code = match status.code() {
-        Some(code) => code,
+    let mut exit_code = 1;
+
+    #[cfg(unix)]
+    let mut terminated_signal: Option<i32> = None;
+
+    match status.code() {
+        Some(code) => exit_code = code,
         None => {
             #[cfg(unix)]
             {
-                // SAFETY: `signal()` is only available on Unix targets as
-                // guarded by the cfg gate above.
                 if let Some(sig) = status.signal() {
-                    128 + sig
-                } else {
-                    // Fallback – should not happen but keeps the compiler
-                    // happy if the platform does not support signals.
-                    1
+                    terminated_signal = Some(sig);
+                    exit_code = 128 + sig;
                 }
             }
-            #[cfg(not(unix))]
-            {
-                1
-            }
         }
-    };
+    }
 
-    // Write the exit code as early as possible so that `pend wait` does not
-    // block indefinitely if we crash while flushing logs.
+    // Write exit code and, if available, signal file early.
     fs::write(&paths.exit, format!("{}\n", exit_code))?;
+
+    #[cfg(unix)]
+    if let Some(sig) = terminated_signal {
+        let _ = fs::write(&paths.signal, format!("{}\n", sig));
+    }
 
     let join_and_check = |handle: std::thread::JoinHandle<io::Result<()>>| -> io::Result<()> {
         match handle.join() {

@@ -31,6 +31,7 @@ pub(crate) struct JobPaths {
     pub(crate) meta: PathBuf,
     pub(crate) log: PathBuf,
     pub(crate) lock: PathBuf,
+    pub(crate) signal: PathBuf,
 }
 
 impl JobPaths {
@@ -43,6 +44,7 @@ impl JobPaths {
             meta: root.join(format!("{}.json", job_name)),
             log: root.join(format!("{}.log", job_name)),
             lock: root.join(format!("{}.lock", job_name)),
+            signal: root.join(format!("{}.signal", job_name)),
         })
     }
 
@@ -52,6 +54,7 @@ impl JobPaths {
             || self.exit.exists()
             || self.meta.exists()
             || self.log.exists()
+            || self.signal.exists()
     }
 
     /// Generic helper returning the file size for the given path or `0` if the
