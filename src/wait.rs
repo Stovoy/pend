@@ -1,6 +1,15 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
+// For efficient change detection we attempt to use a platform file watcher at
+// runtime.  When that fails (e.g. unsupported platform or too many open
+// descriptors) we transparently fall back to the previous exponential back-
+// off polling loop so behaviour remains correct albeit slightly less
+// efficient.
+use std::sync::mpsc::channel;
+
+use notify::{RecommendedWatcher, RecursiveMode, Watcher, Config};
+
 use crate::color::{colors_enabled, COLOR_CODES};
 use crate::paths::JobPaths;
 
@@ -29,15 +38,73 @@ pub(crate) fn wait_jobs(job_names: &[String]) -> io::Result<i32> {
 fn wait_single(job_name: &str) -> io::Result<i32> {
     let paths = JobPaths::new(job_name)?;
 
-    // Defer the existence check until the `.exit` file appears to avoid a
-    // race when `pend wait` is invoked immediately after `pend do`.
-    let base_delay = std::time::Duration::from_millis(50);
-    let max_delay = std::time::Duration::from_secs(2);
-    let mut current_delay = base_delay;
+    // ------------------------------------------------------------------
+    // Efficiently wait for the `.exit` marker file to appear.
+    // ------------------------------------------------------------------
 
-    while !paths.exit.exists() {
-        std::thread::sleep(current_delay);
-        current_delay = std::cmp::min(current_delay * 2, max_delay);
+    if !paths.exit.exists() {
+        // First try the fast/efficient path: a platform specific file
+        // watcher.  When that fails we degrade gracefully to the old
+        // exponential–back-off polling implementation so correctness is
+        // unaffected.
+
+        let wait_result = (|| -> io::Result<()> {
+            let parent_dir = paths
+                .exit
+                .parent()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid path"))?;
+
+            let (tx, rx) = channel();
+
+            // As of notify v6 the recommended API is the `recommended_watcher`
+            // helper which automatically picks the best implementation for
+            // the current platform.
+            let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
+                // Ignore send errors – the receiver might have gone away
+                // which simply means we stop watching.
+                let _ = tx.send(res);
+            })
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            watcher
+                .watch(parent_dir, RecursiveMode::NonRecursive)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+            // Block until we either observe the creation of the `.exit`
+            // file or the watcher is cancelled/drops.
+            while !paths.exit.exists() {
+                match rx.recv() {
+                    Ok(Ok(event)) => {
+                        if event.paths.iter().any(|p| p == &paths.exit) {
+                            break;
+                        }
+                    }
+                    Ok(Err(err)) => return Err(io::Error::new(io::ErrorKind::Other, err)),
+                    Err(_disconnected) => {
+                        // The watcher channel closed unexpectedly. Bail out
+                        // so the caller can fall back to polling.
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "watcher channel disconnected",
+                        ));
+                    }
+                }
+            }
+
+            Ok(())
+        })();
+
+        if wait_result.is_err() {
+            // Fallback: manual sleep–poll loop with exponential back-off.
+            let base_delay = std::time::Duration::from_millis(50);
+            let max_delay = std::time::Duration::from_secs(2);
+            let mut current_delay = base_delay;
+
+            while !paths.exit.exists() {
+                std::thread::sleep(current_delay);
+                current_delay = std::cmp::min(current_delay * 2, max_delay);
+            }
+        }
     }
 
     // Prefer the combined `.log` when present to preserve output order.
