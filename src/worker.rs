@@ -108,17 +108,35 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     // Writers for individual streams plus the combined log.
     let out_file = File::create(&paths.out)?;
     let err_file = File::create(&paths.err)?;
-    let log_file = File::create(&paths.log)?;
+    // ------------------------------------------------------------------
+    // New: use a single dedicated writer task for the combined log file to
+    // avoid contended locking between the two stream reader threads.
+    // ------------------------------------------------------------------
 
-    use std::sync::{Arc, Mutex};
-    let log_shared = Arc::new(Mutex::new(log_file));
+    use std::sync::mpsc;
 
-    // Helper to spawn one reader thread which streams its input directly to
-    // the corresponding output file *and* the shared combined log file.
+    // Channel capacity tuned to roughly one decent chunk per stream – we do
+    // not need a huge buffer because the writer keeps up easily.
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+
+    // Dedicated writer thread which owns the combined log file handle.
+    let log_handle = {
+        let log_path_clone = paths.log.clone();
+        std::thread::spawn(move || -> io::Result<()> {
+            let mut log_file = File::create(&log_path_clone)?;
+            while let Ok(chunk) = rx.recv() {
+                log_file.write_all(&chunk)?;
+            }
+            Ok(())
+        })
+    };
+
+    // Helper spawning one reader thread per pipe that forwards bytes to the
+    // per-stream artefact file and to the shared channel.
     fn spawn_reader<R: Read + Send + 'static>(
         reader: R,
         mut dest_file: File,
-        log_shared: Arc<Mutex<File>>,
+        tx: mpsc::Sender<Vec<u8>>,
     ) -> std::thread::JoinHandle<io::Result<()>> {
         std::thread::spawn(move || {
             let mut buf_reader = std::io::BufReader::new(reader);
@@ -131,17 +149,15 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
                 };
 
                 dest_file.write_all(&chunk[..n])?;
-                {
-                    let mut log = log_shared.lock().unwrap();
-                    log.write_all(&chunk[..n])?;
-                }
+                // Ignore send errors – means the writer thread already shut down.
+                let _ = tx.send(chunk[..n].to_vec());
             }
             Ok(())
         })
     }
 
-    let stdout_handle = spawn_reader(stdout_pipe, out_file, Arc::clone(&log_shared));
-    let stderr_handle = spawn_reader(stderr_pipe, err_file, Arc::clone(&log_shared));
+    let stdout_handle = spawn_reader(stdout_pipe, out_file, tx.clone());
+    let stderr_handle = spawn_reader(stderr_pipe, err_file, tx);
 
     // Wait for the child process to exit *and* for the reader threads to
     // finish flushing their respective buffers.
@@ -196,6 +212,9 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
 
     join_and_check(stdout_handle)?;
     join_and_check(stderr_handle)?;
+
+    // Wait for writer.
+    join_and_check(log_handle)?;
 
     let ended = chrono::Utc::now();
 
