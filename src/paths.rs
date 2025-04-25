@@ -1,3 +1,19 @@
+//! Centralised handling of on-disk artefact locations.
+//!
+//! All files created by *pend* live in a single directory which defaults to
+//! `$TMPDIR/pend` but can be overridden through the environment variable
+//! `PEND_DIR`.  Grouping paths in the [`JobPaths`] struct keeps the logic for
+//! constructing and validating those filenames in one place and avoids ad-hoc
+//! string formatting throughout the code base.
+//!
+//! Responsibilities:
+//!   • Create / ensure the root directory exists (including environment
+//!     override).
+//!   • Derive deterministic filenames for the various artefacts
+//!     (`.out`, `.err`, `.log`, `.exit`, `.json`, `.lock`, `.signal`).
+//!   • Reject paths that would exceed platform path length limits *up front*
+//!     so that callers get a clear error instead of an obscure I/O failure
+//!     half-way through execution.
 use std::env;
 use std::fs;
 use std::io;

@@ -1,3 +1,20 @@
+//! Detached background process launched by `pend do`.
+//!
+//! A *worker* has exactly one job: run the user command in a sub‐process and
+//! persist all relevant artefacts (logs, exit code, metadata) in the jobs
+//! directory.  It is intentionally kept small and free of complex control
+//! flow so that crashes and panics are extremely unlikely – the parent
+//! assumes that once the worker was spawned successfully it will either run
+//! to completion or be terminated by the operating system.
+//!
+//! Important traits:
+//!   • Owns a long-lived advisory lock on `.lock` to guarantee exclusivity for
+//!     the entire runtime.
+//!   • Captures stdout/stderr via OS pipes and merges them into a single `.log`
+//!     stream without blocking either source.
+//!   • Supports optional size-bounded log rotation controlled through the
+//!     `PEND_MAX_LOG_SIZE` environment variable set by the frontend.
+//!   • Produces a human-readable `.json` metadata file for future tooling.
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};

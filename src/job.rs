@@ -1,3 +1,19 @@
+//! Front-end helper for the `pend do` sub-command.
+//!
+//! This module owns the user-facing *setup* work required before the detached
+//! worker process can be launched:
+//!
+//! 1.  Validate the supplied job name (length, character set, path traversal)
+//!     so that the rest of the code base can assume well-formed names.
+//! 2.  Perform an advisory lock on a sidecar `.lock` file to prevent two
+//!     concurrent `pend do` invocations from racing on the same job.
+//! 3.  Abort early if artefacts for that job already exist.
+//! 4.  Finally spawn the background *worker* process via
+//!     [`crate::worker::spawn_worker`].
+//!
+//! The heavy lifting – capturing stdout/stderr, log rotation, metadata – is
+//! handled inside `worker.rs`.  Keeping the synchronous "front door" logic in
+//! a dedicated module clarifies the control flow.
 use std::io;
 
 use crate::paths::JobPaths;

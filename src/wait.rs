@@ -1,3 +1,20 @@
+//! Implementation of the `pend wait` sub-command.
+//!
+//! Waiting can target *one* job (simpler code path) or *multiple* jobs at
+//! once.  In the latter case the module prints coloured, interleaved output
+//! very similar to what `cargo test -- --nocapture` does so that users can
+//! follow progress in real time.
+//!
+//! Efficiency considerations:
+//!   • We try to employ the cross-platform [`notify`] crate for near-instant
+//!     detection of the `.exit` marker file.  When the watcher cannot be
+//!     initialised we degrade gracefully to exponential back-off polling.
+//!   • For multi-job waits we keep each job's current read position and only
+//!     tail the delta since the previous iteration which avoids re-reading
+//!     files over and over.
+//!
+//! The public surface of this module is the [`wait_jobs`] function which is
+//! called from `main.rs`.
 use anstyle::{AnsiColor, Color, Style};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
