@@ -53,16 +53,32 @@ pub(crate) fn run_tui() -> io::Result<()> {
             writeln!(stdout, "press 'q' to quit\n")?;
             y += 2;
 
+            use chrono::{DateTime, Local};
+
             for job in unique {
                 let exit_path = root.join(format!("{job}.exit"));
-                let status = if exit_path.exists() {
-                    let code = std::fs::read_to_string(exit_path)?.trim().to_string();
-                    format!("exit {code}")
+
+                if exit_path.exists() {
+                    // Finished – read exit code and modification time.
+                    let code = std::fs::read_to_string(&exit_path)?.trim().to_string();
+                    let ts = std::fs::metadata(&exit_path)
+                        .and_then(|m| m.modified())
+                        .map(|m| {
+                            let dt: DateTime<Local> = m.into();
+                            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+                        })
+                        .unwrap_or_else(|_| "?".into());
+                    stdout.execute(cursor::MoveTo(0, y))?;
+                    stdout.execute(style::Print(format!(
+                        "{:<20} {:<8} {}",
+                        job, format!("exit {code}"), ts
+                    )))?;
                 } else {
-                    "running".into()
-                };
-                stdout.execute(cursor::MoveTo(0, y))?;
-                stdout.execute(style::Print(format!("{:<20} {}", job, status)))?;
+                    // Still running.
+                    stdout.execute(cursor::MoveTo(0, y))?;
+                    stdout.execute(style::Print(format!("{:<20} running", job)))?;
+                }
+
                 y += 1;
             }
             stdout.flush()?;
