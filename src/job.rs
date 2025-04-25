@@ -87,10 +87,10 @@ pub(crate) fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
     // ------------------------------------------------------------------
     // Advisory lock to guard against concurrent `pend do` invocations for
     // the *same* job name. We create (or open) a lightweight `.lock` file
-    // next to the other artefacts and attempt to obtain a non-blocking
+    // next to the other artifacts and attempt to obtain a non-blocking
     // exclusive lock. If another process already holds the lock we surface
     // a user-friendly error immediately instead of racing to create the
-    // artefact files only to fail later on.
+    // artifact files only to fail later on.
     // ------------------------------------------------------------------
 
     let lock_file = OpenOptions::new()

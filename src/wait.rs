@@ -8,7 +8,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 // efficient.
 use std::sync::mpsc::channel;
 
-use notify::{RecommendedWatcher, RecursiveMode, Watcher, Config};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::color::{colors_enabled, COLOR_CODES};
 use crate::paths::JobPaths;
@@ -222,19 +222,105 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
         .map(|(idx, name)| JobState::new(name, COLOR_CODES[idx % COLOR_CODES.len()]))
         .collect::<Result<_, _>>()?;
 
-    // Basic sanity check: all jobs must have started.
-    for job in &jobs {
-        if !job.log_path.exists()
-            && !job.exit_path.exists()
-            && !job.log_path.with_extension("out").exists()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("unknown job '{}'", job.name),
-            ));
+    // NOTE: We no longer abort immediately when no artifact files exist yet
+    // for a given job. Creation of the first `.log`/`.out` or `.exit` file
+    // might race slightly behind the `pend do` command returning. Our
+    // watcher-based implementation below will wake up as soon as the job
+    // touches any of its artifacts. The legacy polling fallback performs an
+    // existence check after a short initial delay instead.
+
+    // Try the watcher-based implementation first. If anything fails we'll
+    // transparently fall back to the legacy polling loop.
+    match wait_interleaved_with_watcher(&mut jobs) {
+        Ok(code) => Ok(code),
+        Err(_err) => wait_interleaved_polling(&mut jobs),
+    }
+}
+
+// -------------------------------------------------------------------------
+// Watcher-based implementation
+// -------------------------------------------------------------------------
+
+fn wait_interleaved_with_watcher(jobs: &mut [JobState]) -> io::Result<i32> {
+    use std::sync::mpsc::channel;
+    use std::sync::mpsc::RecvTimeoutError;
+
+    // Determine the common root directory (all artifacts live there).
+    let root_dir = jobs
+        .first()
+        .and_then(|j| j.log_path.parent())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid job path"))?;
+
+    let (event_tx, event_rx) = channel();
+
+    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
+        let _ = event_tx.send(res);
+    })
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    watcher
+        .watch(root_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // Initial poll flush.
+    let mut first_error: Option<i32> = None;
+    for job in jobs.iter_mut() {
+        let (finished, _progress) = job.poll()?;
+        if finished {
+            if let Some(code) = job.exit_code {
+                if code != 0 && first_error.is_none() {
+                    first_error = Some(code);
+                }
+            }
         }
     }
 
+    // Main event-driven loop.
+    while jobs.iter().any(|j| j.exit_code.is_none()) {
+        // Wait for any FS event with a generous timeout so we do not block
+        // forever in case the watcher misses an update.
+        match event_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(_) | Err(RecvTimeoutError::Timeout) => {
+                // On any event (or timeout) re-poll all jobs for progress.
+                for job in jobs.iter_mut() {
+                    let (finished, _progress) = job.poll()?;
+                    if finished {
+                        if let Some(code) = job.exit_code {
+                            if code != 0 && first_error.is_none() {
+                                first_error = Some(code);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "watcher channel disconnected",
+                ));
+            }
+        }
+    }
+
+    // Drain any remaining buffered output.
+    for job in jobs.iter_mut() {
+        let _ = job.poll()?;
+    }
+
+    // Emit summary lines.
+    for job in jobs.iter() {
+        let meta_path = JobPaths::new(&job.name)?.meta;
+        emit_summary(&job.name, job.exit_code.unwrap_or(1), &meta_path)?;
+    }
+
+    Ok(first_error.unwrap_or(0))
+}
+
+// -------------------------------------------------------------------------
+// Legacy polling implementation (fallback)
+// -------------------------------------------------------------------------
+
+fn wait_interleaved_polling(jobs: &mut [JobState]) -> io::Result<i32> {
     let mut remaining = jobs.len();
     let mut first_error: Option<i32> = None;
 
@@ -245,7 +331,7 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
     while remaining > 0 {
         let mut any_progress = false;
 
-        for job in &mut jobs {
+        for job in jobs.iter_mut() {
             if job.exit_code.is_some()
                 && job.log_offset == crate::paths::JobPaths::file_len(&job.log_path)
             {
@@ -278,13 +364,12 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
         }
     }
 
-    // Drain any remaining buffered output once more.
-    for job in &mut jobs {
+    // Drain remaining output
+    for job in jobs.iter_mut() {
         let _ = job.poll()?;
     }
 
-    // Emit summary lines for each job.
-    for job in &jobs {
+    for job in jobs.iter() {
         let meta_path = JobPaths::new(&job.name)?.meta;
         emit_summary(&job.name, job.exit_code.unwrap_or(1), &meta_path)?;
     }
