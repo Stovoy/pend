@@ -7,6 +7,7 @@ mod job;
 mod paths;
 mod wait;
 mod worker;
+mod tui;
 
 use job::do_job;
 use wait::wait_jobs;
@@ -107,6 +108,9 @@ enum Commands {
         #[arg(value_name = "JOB", required_unless_present = "all")]
         jobs: Vec<String>,
     },
+
+    /// Interactive overview of all jobs (press 'q' to quit)
+    Tui,
 }
 
 // We keep a small wrapper around the previous `main` body so we can format
@@ -212,6 +216,11 @@ fn try_main() -> io::Result<()> {
                     let _ = fs::remove_file(p);
                 }
             }
+            Ok(())
+        }
+
+        Commands::Tui => {
+            crate::tui::run_tui()?;
             Ok(())
         }
     }
