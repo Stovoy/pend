@@ -1,27 +1,28 @@
 name: CI
 
 on:
-  push:
-    branches: [main, master]
   pull_request:
-    branches: [main, master]
+  push:
+    branches: [ main, master ]
 
 jobs:
-  build-and-test:
-    name: Rust – ${{ matrix.os }}
+  build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: actions/setup-rust@v1
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install stable Rust
+        uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          profile: minimal
+          override: true
 
-      - name: Cache cargo registry and build artifacts
+      - name: Cache cargo registry + build artifacts
         uses: actions/cache@v3
         with:
           path: |
@@ -29,10 +30,12 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: Build
-        run: cargo build --all --verbose --color always
 
       - name: Run tests
-        run: cargo test --all --verbose --color always
+        run: cargo test --all --verbose
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
