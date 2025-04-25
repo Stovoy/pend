@@ -61,6 +61,28 @@ By default, `pend` stores job artifacts in a temporary directory specific to you
 
 Set `--dir` or environment variable `PEND_DIR` to relocate them to a custom location.
 
+### What exactly gets written to disk?
+
+Every job lives exclusively in the *jobs directory* (the temp folder or the
+path supplied via `--dir` / `PEND_DIR`).  Files follow the predictable pattern
+
+```
+<job-name>.<extension>
+```
+
+| Extension | Always present | Description |
+|-----------|----------------|-------------|
+| `.out`    | yes  | Raw **stdout** of the command, exactly as emitted – useful for tools that expect plain text files. |
+| `.err`    | yes  | Raw **stderr** of the command. |
+| `.log`    | yes  | A **combined** (`stdout` + `stderr`) stream in chronological order. When `--max-log-size` is in effect the file is rotated to `.log.1` once it exceeds the requested size. |
+| `.exit`   | yes  | Single line containing the numeric **exit code** written *before* the worker closes any log files so that `pend wait` can finish even when the worker crashes immediately afterwards. |
+| `.json`   | yes  | Human-readable **metadata** (pretty-printed JSON) with the exact command line, child PID, UTC timestamps (`started`, `ended`), and the final exit code. |
+| `.signal` | Unix only &nbsp; | When the process terminates because of a signal the raw signal number is persisted here.  The exit status reported via `.exit` adheres to the convention `128 + signal`. |
+| `.lock`   | internal        | Advisory file-lock guard to prevent two `pend do` invocations from using the same job name concurrently.  Can be deleted safely while no job is running. |
+
+All artefacts are plain text or JSON so you can inspect them with standard
+tools (`cat`, `jq`, PowerShell, etc.) without special tooling.
+
 ## Feature highlights
 
 * Zero runtime dependencies – statically linked Rust binary.
