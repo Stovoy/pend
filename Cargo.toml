@@ -15,6 +15,7 @@ unicode-normalization = "0.1"
 # File locking for cross-platform advisory locks
 fs2 = "0.4"
 notify = { version = "6" }
+anstyle = "1.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

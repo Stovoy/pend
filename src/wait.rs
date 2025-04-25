@@ -1,5 +1,18 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use anstyle::{AnsiColor, Style, Color};
+
+fn color_style(idx: usize) -> Style {
+    let color = match idx % 6 {
+        0 => AnsiColor::Red,
+        1 => AnsiColor::Green,
+        2 => AnsiColor::Yellow,
+        3 => AnsiColor::Blue,
+        4 => AnsiColor::Magenta,
+        _ => AnsiColor::Cyan,
+    };
+    Style::new().fg_color(Some(Color::Ansi(color)))
+}
 
 // For efficient change detection we attempt to use a platform file watcher at
 // runtime.  When that fails (e.g. unsupported platform or too many open
@@ -10,7 +23,7 @@ use std::sync::mpsc::channel;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::color::{colors_enabled, COLOR_CODES};
+use crate::color::colors_enabled;
 use crate::paths::JobPaths;
 
 /// Public helper mirroring `pend wait <job …>`.
@@ -138,12 +151,16 @@ struct JobState {
     exit_path: std::path::PathBuf,
     log_offset: u64,
     exit_code: Option<i32>,
-    color: &'static str,
+    style: Option<anstyle::Style>,
 }
 
 impl JobState {
-    fn new(name: &str, color: &'static str) -> io::Result<Self> {
-        let effective_color = if colors_enabled() { color } else { "" };
+    fn new(name: &str, style: anstyle::Style) -> io::Result<Self> {
+        let style_opt = if colors_enabled() {
+            Some(style)
+        } else {
+            None
+        };
         let paths = JobPaths::new(name)?;
         Ok(Self {
             name: name.to_string(),
@@ -151,7 +168,7 @@ impl JobState {
             exit_path: paths.exit,
             log_offset: 0,
             exit_code: None,
-            color: effective_color,
+            style: style_opt,
         })
     }
 
@@ -182,19 +199,12 @@ impl JobState {
             *offset = size;
 
             if !buffer.is_empty() {
-                if self.color.is_empty() {
-                    io::stdout().write_all(&buffer)?;
+                if let Some(style) = &self.style {
+                    let txt = String::from_utf8_lossy(&buffer);
+                    let styled = format!("{}{}{}", style.render(), txt, style.render_reset());
+                    io::stdout().write_all(styled.as_bytes())?;
                 } else {
-                    let reset = "\x1b[0m";
-                    io::stdout().write_all(
-                        format!(
-                            "{}{}{}",
-                            self.color,
-                            String::from_utf8_lossy(&buffer),
-                            reset
-                        )
-                        .as_bytes(),
-                    )?;
+                    io::stdout().write_all(&buffer)?;
                 }
                 io::stdout().flush()?;
             }
@@ -219,7 +229,7 @@ fn wait_interleaved(job_names: &[String]) -> io::Result<i32> {
     let mut jobs: Vec<JobState> = job_names
         .iter()
         .enumerate()
-        .map(|(idx, name)| JobState::new(name, COLOR_CODES[idx % COLOR_CODES.len()]))
+        .map(|(idx, name)| JobState::new(name, color_style(idx)))
         .collect::<Result<_, _>>()?;
 
     // NOTE: We no longer abort immediately when no artifact files exist yet
