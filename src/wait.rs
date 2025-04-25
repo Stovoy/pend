@@ -5,7 +5,7 @@ use crate::color::{colors_enabled, COLOR_CODES};
 use crate::paths::JobPaths;
 
 /// Public helper mirroring `pend wait <job …>`.
-pub fn wait_jobs(job_names: &[String]) -> io::Result<i32> {
+pub(crate) fn wait_jobs(job_names: &[String]) -> io::Result<i32> {
     if job_names.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

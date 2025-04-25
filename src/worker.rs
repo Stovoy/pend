@@ -55,7 +55,7 @@ pub(crate) fn spawn_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
 
 /// Internal function executed by the *worker* sub-command.
 /// Entry point used by the hidden `worker` CLI subcommand.
-pub fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
+pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     let paths = JobPaths::new(job_name)?;
 
     // ------------------------------------------------------------------

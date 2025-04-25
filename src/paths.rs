@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 /// `PEND_DIR` environment variable.
 /// Determine the directory into which all job artifacts are written and ensure
 /// that it exists on the file system.
-pub(crate) fn jobs_root() -> io::Result<PathBuf> {
+fn jobs_root() -> io::Result<PathBuf> {
     if let Ok(p) = env::var("PEND_DIR") {
         let path = PathBuf::from(p);
         fs::create_dir_all(&path)?;
@@ -25,12 +25,12 @@ pub(crate) fn jobs_root() -> io::Result<PathBuf> {
 /// Helper holding all paths used for a given job name.
 #[derive(Debug, Clone)]
 pub(crate) struct JobPaths {
-    pub out: PathBuf,
-    pub err: PathBuf,
-    pub exit: PathBuf,
-    pub meta: PathBuf,
-    pub log: PathBuf,
-    pub lock: PathBuf,
+    pub(crate) out: PathBuf,
+    pub(crate) err: PathBuf,
+    pub(crate) exit: PathBuf,
+    pub(crate) meta: PathBuf,
+    pub(crate) log: PathBuf,
+    pub(crate) lock: PathBuf,
 }
 
 impl JobPaths {
