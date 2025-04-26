@@ -69,7 +69,7 @@ That’s the entire user-facing surface – **four deliberately boring verbs**.
 ## 🔍  Artifact layout
 
 Jobs live in a single directory (defaults to `$TMPDIR/pend`, override via
-`--dir` or `PEND_DIR`).  Files follow `<job>.<ext>`:
+`--dir` or `PEND_DIR`). Files follow `<job>.<ext>`:
 
 | File               | Purpose |
 |--------------------|---------|

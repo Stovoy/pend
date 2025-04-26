@@ -68,6 +68,22 @@ pub(crate) fn wait_jobs(job_names: &[String]) -> io::Result<i32> {
 fn wait_single(job_name: &str) -> io::Result<i32> {
     let paths = JobPaths::new(job_name)?;
 
+    // Quick sanity check: if *no* artifacts exist **and** no lock file is
+    // present we can conclude that the job name has never been started –
+    // abort early instead of waiting forever.
+    if !paths.exit.exists()
+        && !paths.lock.exists()
+        && !paths.out.exists()
+        && !paths.err.exists()
+        && !paths.log.exists()
+        && !paths.meta.exists()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("job '{job_name}' not found"),
+        ));
+    }
+
     // ------------------------------------------------------------------
     // Efficiently wait for the `.exit` marker file to appear.
     // ------------------------------------------------------------------

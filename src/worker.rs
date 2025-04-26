@@ -308,5 +308,10 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     let json = serde_json::to_vec_pretty(&meta)?;
     fs::write(&paths.meta, json)?;
 
+    // All artifacts persisted – drop the advisory lock and delete the file so
+    // the presence of a lingering `.lock` does not confuse future commands.
+    drop(lock_file); // explicit – ensures the exclusive lock is released first
+    let _ = fs::remove_file(&paths.lock);
+
     Ok(())
 }

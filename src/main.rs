@@ -8,6 +8,7 @@ mod paths;
 mod wait;
 mod worker;
 mod tui;
+mod process;
 
 use job::do_job;
 use wait::wait_jobs;
@@ -181,12 +182,33 @@ fn try_main() -> io::Result<()> {
                 // Any file with a known extension indicates presence of a job
                 let mut set = std::collections::HashSet::new();
                 if let Ok(entries) = fs::read_dir(&root) {
+                    // Known primary artifact extensions. Rotated logs end up
+                    // as `<job>.log.<n>` where the trailing numeric segment
+                    // is *not* part of the canonical extension list below.
+                    const EXTENSIONS: [&str; 7] = [
+                        "out", "err", "log", "exit", "json", "signal", "lock",
+                    ];
+
                     for entry in entries.flatten() {
                         if let Some(name) = entry.file_name().to_str() {
-                            // Strip extension.
-                            if let Some((job, ext)) = name.rsplit_once('.') {
-                                if matches!(ext, "out" | "err" | "log" | "exit" | "json" | "signal" | "lock")
-                                {
+                            // 1. Remove one or more purely numeric trailing
+                            //    segments (e.g. `.log.1` → `.log`). This
+                            //    covers log rotation where the current log is
+                            //    renamed to `<job>.log.<n>`.
+                            let mut base = name;
+                            loop {
+                                if let Some((stem, ext)) = base.rsplit_once('.') {
+                                    if ext.chars().all(|c| c.is_ascii_digit()) {
+                                        base = stem;
+                                        continue;
+                                    }
+                                }
+                                break;
+                            }
+
+                            // 2. Check for a recognised artifact extension.
+                            if let Some((job, ext)) = base.rsplit_once('.') {
+                                if EXTENSIONS.contains(&ext) {
                                     set.insert(job.to_string());
                                 }
                             }
@@ -208,16 +230,46 @@ fn try_main() -> io::Result<()> {
             for job in &targets {
                 let paths = crate::paths::JobPaths::new(job)?;
                 // Skip deletion if lock file exists and is locked (job running).
+
                 if paths.lock.exists() {
                     use fs2::FileExt;
                     if let Ok(file) = fs::OpenOptions::new().read(true).open(&paths.lock) {
                         if file.try_lock_exclusive().is_err() {
-                            eprintln!("warning: job '{job}' appears to be running – skipping");
-                            continue;
+                            // Another process currently holds the lock –
+                            // before skipping, cross-check whether that PID is
+                            // *actually* alive to guard against stale lock
+                            // files left behind after crashes.
+
+                            let mut skip = true;
+
+                            // Attempt to parse PID from metadata.
+                            if let Ok(meta_bytes) = fs::read(&paths.meta) {
+                                if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_bytes) {
+                                    if let Some(pid) = meta_json.get("pid").and_then(|v| v.as_u64()) {
+                                        if !crate::process::process_is_alive(pid as u32) {
+                                            // Stale – we may proceed with cleaning.
+                                            skip = false;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if skip {
+                                eprintln!("warning: job '{job}' appears to be running – skipping");
+                                continue;
+                            }
                         }
                     }
                 }
 
+                // Remove all primary artifacts and any rotated variants (e.g.
+                // `<job>.log.1`).
+
+                const EXTENSIONS: [&str; 7] = [
+                    "out", "err", "log", "exit", "json", "signal", "lock",
+                ];
+
+                // Primary files (no rotation suffix).
                 for p in [
                     &paths.out,
                     &paths.err,
@@ -228,6 +280,22 @@ fn try_main() -> io::Result<()> {
                     &paths.lock,
                 ] {
                     let _ = fs::remove_file(p);
+                }
+
+                // Rotated variants live in the same directory; match via
+                // prefix `<job>.<ext>.` where `<ext>` is in the known list.
+                if let Ok(entries) = fs::read_dir(&root) {
+                    for entry in entries.flatten() {
+                        if let Some(fname) = entry.file_name().to_str() {
+                            for ext in &EXTENSIONS {
+                                let prefix = format!("{job}.{ext}.");
+                                if fname.starts_with(&prefix) {
+                                    let _ = fs::remove_file(entry.path());
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Ok(())
