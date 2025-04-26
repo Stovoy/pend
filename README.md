@@ -37,7 +37,7 @@ all tier-1 platforms (Windows / macOS / Linux – x86-64 & aarch64).
 
 | Command | What it does |
 |---------|--------------|
-| `pend do <job> <cmd …>` | Launches `<cmd>` detached in the background. Captures its stdout, stderr, exit code, metadata, _and_ a combined `.log` stream. |
+| `pend do <job> <cmd …>` | Launches `<cmd>` detached in the background. Captures its stdout, stderr, exit code, metadata, _and_ a combined `.log` stream. Optional flags `--timeout <secs>` and `--retries <n>` kill or re-run the command automatically. |
 | `pend wait <job …>`     | Blocks until the supplied job(s) finish. Streams their output in the original order and exits with the very same code the first failing job produced. |
 | `pend clean [--all \| <job …>]` | Deletes artifacts to free disk space. Skips jobs that are still running. |
 | `pend tui`              | Opens a super-lightweight TUI that auto-refreshes and shows a live list of all jobs (press `q` to quit). |
@@ -55,6 +55,8 @@ That’s the entire user-facing surface – **four deliberately boring verbs**.
 • **Coloured multi-job output** – `pend wait a b c` interleaves logs with deterministic colours and clear ✓ / ✗ status lines.
 
 • **Size-bounded log rotation** – `--max-log-size 10M` keeps CI artifacts small yet complete.
+• **Wall-clock timeout** – `pend do <job> --timeout 30 <cmd …>` terminates runaway processes after 30 s and marks the job as failed.
+• **Automatic retries** – `--retries 3` re-runs flaky commands up to three times until one attempt succeeds.
 
 • **Strong validation & security** – path traversal is impossible, job names are capped at 100 characters, and an advisory `.lock` prevents concurrent duplicates.
 
@@ -94,6 +96,11 @@ pytest -q
 
 # Stream & fail fast once the first build fails
 pend wait backend frontend
+
+# Ensure the linter finishes within 60 seconds and automatically retries once
+# if it flaps due to I/O hiccups.
+pend do lint --timeout 60 --retries 1 npm run lint
+pend wait lint
 
 # Package artifacts only if both succeeded
 pend do package ./scripts/package.sh
