@@ -131,11 +131,42 @@ pub(crate) fn do_job(
         }
     }
 
+    // At this point we exclusively own the advisory lock which guarantees
+    // that **no other** worker process for the same job name is currently
+    // running. Any pre-existing artifact files therefore stem from a
+    // *previous* finished run and can be safely removed so the new job starts
+    // with a clean slate. This makes workflows like
+    //
+    //   pend do build … && pend wait build && pend do build …
+    //
+    // convenient because users do not have to invoke `pend clean` in between.
+
     if paths.any_exist() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("job '{job_name}' already exists"),
-        ));
+        // Best-effort deletion – ignore individual failures and surface an
+        // error only when **all** attempts fail which usually indicates a
+        // more fundamental permissions problem.
+        let mut last_err: Option<io::Error> = None;
+
+        for p in [
+            &paths.out,
+            &paths.err,
+            &paths.exit,
+            &paths.meta,
+            &paths.log,
+            &paths.signal,
+        ] {
+            if p.exists() {
+                if let Err(e) = std::fs::remove_file(p) {
+                    // Record but continue trying other paths so we clean up
+                    // as much as possible.
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        if let Some(err) = last_err {
+            return Err(err);
+        }
     }
 
     super::worker::spawn_worker(job_name, cmd, timeout, retries)

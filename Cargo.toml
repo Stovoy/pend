@@ -35,16 +35,16 @@ chrono = { version = "0.4", features = ["serde", "alloc"] }
 unicode-normalization = "0.1"
 # File locking for cross-platform advisory locks
 fs2 = "0.4"
-notify = { version = "6" }
+notify = "8.0"
 anstyle = "1.0"
-crossterm = "0.27"
+crossterm = "0.29"
 wait-timeout = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"
