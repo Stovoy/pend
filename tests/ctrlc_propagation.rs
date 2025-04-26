@@ -4,7 +4,6 @@
 //! running and ultimately finishes the job.
 
 use assert_cmd::prelude::*;
-use predicates::str::contains;
 use std::process::{Command, Stdio};
 use std::{thread, time::Duration};
 use tempfile::TempDir;

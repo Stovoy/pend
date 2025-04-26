@@ -269,27 +269,22 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     // Retry loop.
     // ------------------------------------------------------------------
 
-    let mut append = false;
-    let mut first_started = Utc::now();
-    let mut last_ended = Utc::now();
-    let mut final_pid = 0;
-    let mut final_exit_code = 1;
+    let (mut final_exit_code, first_started, mut last_ended, mut final_pid) =
+        run_once(cmd, &paths, timeout_secs, false)?;
 
-    loop {
-        let (code, started, ended, pid) = run_once(cmd, &paths, timeout_secs, append)?;
+    let append = true; // subsequent attempts should append to existing log files
 
-        if !append {
-            first_started = started;
-        }
+    while final_exit_code != 0 && retries_left > 0 {
+        retries_left -= 1;
+
+        let (code, _started, ended, pid) = run_once(cmd, &paths, timeout_secs, append)?;
+
+        // The first_started timestamp is intentionally preserved from the very
+        // first attempt, but we keep updating the other fields so that the
+        // metadata reflects the details from the last attempt.
         last_ended = ended;
         final_pid = pid;
         final_exit_code = code;
-
-        if code == 0 || retries_left == 0 {
-            break;
-        }
-        retries_left -= 1;
-        append = true;
     }
 
     // ------------------------------------------------------------------
