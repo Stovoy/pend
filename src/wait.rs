@@ -50,6 +50,24 @@ pub(crate) fn wait_jobs(job_names: &[String]) -> io::Result<i32> {
         ));
     }
 
+    // Before blocking verify that the supplied job names actually refer to
+    // *existing* jobs. A completely unknown job would otherwise keep the
+    // waiter running forever because none of the expected artifact files
+    // (e.g. `<job>.lock`, `<job>.log`, …) will ever show up. We *do not*
+    // require that *all* artifact files are present already – creating the
+    // first files might race the `pend do` command that launched the job –
+    // but at least **one** indicator must exist.
+    for name in job_names {
+        let paths = JobPaths::new(name)?;
+
+        if !paths.any_exist() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("job '{}' not found", name),
+            ));
+        }
+    }
+
     if job_names.len() == 1 {
         return wait_single_streaming(&job_names[0]);
     }
