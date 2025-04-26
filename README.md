@@ -122,7 +122,9 @@ pend clean package
 
 ## 📚 Prior art
 
-`GNU parallel`, `xargs -P`, `make -j`, `ninja`, `taskwarrior`, `just`, `cargo-make` … all wonderful – yet none hit the sweet spot of *ad-hoc, nameable, parallel shell jobs with deterministic logs*.  **pend** does.
+`GNU parallel`, `xargs -P`, `make -j`, `ninja`, `taskwarrior`, `just`, `cargo-make` … all wonderful – yet none hit the sweet spot of *ad-hoc, nameable, parallel shell jobs with deterministic logs*.
+
+**pend** does.
 
 ---
 

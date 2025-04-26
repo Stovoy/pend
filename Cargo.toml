@@ -1,10 +1,31 @@
 [package]
 name = "pend"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
 description = "do now, wait later – tiny job runner"
 readme = "README.md"
+license = "MIT"
+edition = "2021"
+authors = ["Steve Mostovoy <stevemostovoysm@gmail.com>"]
+repository = "https://github.com/Stovoy/pend"
+homepage = "https://github.com/Stovoy/pend"
+documentation = "https://docs.rs/pend"
+
+# Extra metadata for crates.io
+# Up to five short keywords that describe the crate
+keywords = [
+    "job-runner",
+    "cli",
+    "shell",
+    "parallel",
+    "concurrency",
+]
+
+# Crates.io category slugs (see https://crates.io/categories)
+categories = [
+    "command-line-utilities",
+    "development-tools::build-utils",
+    "concurrency",
+]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
