@@ -1,30 +1,22 @@
 //! Detached background process launched by `pend do`.
 //!
-//! A *worker* has exactly one job: run the user command in a sub‐process and
+//! A *worker* has exactly one job: run the user command in a sub-process and
 //! persist all relevant artifacts (logs, exit code, metadata) in the jobs
-//! directory. It is intentionally kept small and free of complex control
-//! flow so that crashes and panics are extremely unlikely – the parent
-//! assumes that once the worker was spawned successfully it will either run
-//! to completion or be terminated by the operating system.
-//!
-//! Important traits:
-//!   • Owns a long-lived advisory lock on `.lock` to guarantee exclusivity for
-//!     the entire runtime.
-//!   • Captures stdout/stderr via OS pipes and merges them into a single `.log`
-//!     stream without blocking either source.
-//!   • Supports optional size-bounded log rotation controlled through the
-//!     `PEND_MAX_LOG_SIZE` environment variable set by the frontend.
-//!   • Produces a human-readable `.json` metadata file for future tooling.
-use std::env;
-use std::fs::{self, File};
+//! directory. The code has been extended to optionally enforce a wall-clock
+//! timeout and to retry failed attempts a configurable number of times.
+
+use chrono::Utc;
+use serde::Serialize;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
-
-use serde::Serialize;
+use std::sync::mpsc;
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 use crate::paths::JobPaths;
 
-/// Lightweight metadata structure serialised to JSON once a job finishes.
+/// Metadata written to `<job>.json` once the worker finishes.
 #[derive(Serialize)]
 struct Meta<'a> {
     job: &'a str,
@@ -35,15 +27,33 @@ struct Meta<'a> {
     exit_code: i32,
 }
 
-/// Spawn a detached **worker** process which, in turn, executes the actual
-/// command and records artifacts. This helper is invoked by [`crate::job::do_job`].
-pub(crate) fn spawn_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
-    let exe_path = env::current_exe()?;
+/// Spawn a *detached* background worker process responsible for running the
+/// actual command and recording artifacts. Front-end helper called by
+/// `pend do`.
+pub(crate) fn spawn_worker(
+    job_name: &str,
+    cmd: &[String],
+    timeout: Option<u64>,
+    retries: Option<u32>,
+) -> io::Result<()> {
+    let exe_path = std::env::current_exe()?;
+
     let mut worker_cmd = Command::new(&exe_path);
     worker_cmd.arg("worker").arg(job_name).arg("--");
     worker_cmd.args(cmd);
 
-    // Detach: we do *not* inherit stdin/stdout/stderr to avoid mixing logs.
+    // Pass optional runtime configuration via environment variables so the
+    // command-line surface of the hidden `worker` sub-command remains
+    // stable.
+    if let Some(t) = timeout {
+        worker_cmd.env("PEND_TIMEOUT", t.to_string());
+    }
+    if let Some(r) = retries {
+        worker_cmd.env("PEND_RETRIES", r.to_string());
+    }
+
+    // Detach from controlling terminal so that the worker survives even when
+    // the parent exits.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -62,40 +72,30 @@ pub(crate) fn spawn_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
         worker_cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
 
-    worker_cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    worker_cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     worker_cmd.spawn()?;
     Ok(())
 }
 
-/// Internal function executed by the *worker* sub-command.
-/// Entry point used by the hidden `worker` CLI subcommand.
+/// Entry point executed by the hidden `worker` sub-command. Never called by
+/// end users.
 pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
+    // ---------------------------------------------------------------------
+    // Resolve paths and obtain an exclusive file lock for the duration of
+    // the worker. This guarantees *exactly one* worker per job name.
+    // ---------------------------------------------------------------------
     let paths = JobPaths::new(job_name)?;
 
-    // ------------------------------------------------------------------
-    // Obtain the same advisory file lock that `pend do` used for the brief
-    // initialisation window. Holding the lock for the entire lifetime of
-    // the worker process guarantees that *no* second job with the same
-    // name can start while this one is still executing, even after the
-    // parent process has exited and released its short-lived lock.
-    // ------------------------------------------------------------------
-
     use fs2::FileExt;
-    use std::fs::OpenOptions;
-
     let lock_file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
         .open(&paths.lock)?;
-
     if let Err(err) = lock_file.try_lock_exclusive() {
-        if err.kind() == std::io::ErrorKind::WouldBlock {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
+        if err.kind() == io::ErrorKind::WouldBlock {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
                 format!("job '{job_name}' is already running"),
             ));
         } else {
@@ -103,176 +103,207 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
         }
     }
 
-    // We'll capture stdout/stderr via pipes so that we can merge them while
-    // still writing dedicated .out / .err files.
-    let started = chrono::Utc::now();
-
-    let mut child_proc = Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    // Capture stdout / stderr pipes from the child process.
-    let stdout_pipe = child_proc
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stdout"))?;
-    let stderr_pipe = child_proc
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stderr"))?;
-
-    // Writers for individual streams plus the combined log.
-    let out_file = File::create(&paths.out)?;
-    let err_file = File::create(&paths.err)?;
-    // ------------------------------------------------------------------
-    // New: use a single dedicated writer task for the combined log file to
-    // avoid contended locking between the two stream reader threads.
-    // ------------------------------------------------------------------
-
-    use std::sync::mpsc;
-
-    // Channel capacity tuned to roughly one decent chunk per stream – we do
-    // not need a huge buffer because the writer keeps up easily.
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-
-    // Dedicated writer thread which owns the combined log file handle.
-    // Read max log size from environment once.
-    let max_log_size = std::env::var("PEND_MAX_LOG_SIZE")
+    // Runtime configuration propagated from the front-end.
+    let timeout_secs = std::env::var("PEND_TIMEOUT").ok().and_then(|v| v.parse::<u64>().ok());
+    let mut retries_left: u32 = std::env::var("PEND_RETRIES")
         .ok()
-        .and_then(|v| v.parse::<u64>().ok());
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
 
-    let log_handle = {
-        let log_path_clone = paths.log.clone();
-        std::thread::spawn(move || -> io::Result<()> {
-            let mut log_file = File::create(&log_path_clone)?;
-            let mut current_len: u64 = 0;
-            if let Ok(meta) = log_file.metadata() {
-                current_len = meta.len();
+    // ---------------------------------------------------------------------
+    // Helper executing *one* attempt of the user command.
+    // ---------------------------------------------------------------------
+    fn run_once(
+        cmd: &[String],
+        paths: &JobPaths,
+        timeout_secs: Option<u64>,
+        append: bool,
+    ) -> io::Result<(i32, chrono::DateTime<Utc>, chrono::DateTime<Utc>, u32)> {
+        // Open per-stream artifact files.
+        let open_mode = |p: &std::path::Path, append: bool| -> io::Result<File> {
+            let mut opts = OpenOptions::new();
+            opts.create(true);
+            if append {
+                opts.append(true);
+            } else {
+                opts.write(true).truncate(true);
             }
+            opts.open(p)
+        };
 
+        let out_file = open_mode(&paths.out, append)?;
+        let err_file = open_mode(&paths.err, append)?;
+
+        // Combined log file and rotation support.
+        let mut log_file = open_mode(&paths.log, append)?;
+        if append {
+            let _ = writeln!(log_file, "\n-- retry --\n");
+        }
+
+        let max_log_size = std::env::var("PEND_MAX_LOG_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+
+        let log_path_clone = paths.log.clone();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+
+        let writer_handle = std::thread::spawn(move || -> io::Result<()> {
+            let mut current_len = log_file.metadata().map(|m| m.len()).unwrap_or(0);
             while let Ok(chunk) = rx.recv() {
                 if let Some(limit) = max_log_size {
                     if current_len + chunk.len() as u64 > limit {
-                        // Rotate: rename current file to .log.1, ignoring errors.
                         let rotated = log_path_clone.with_file_name(format!(
                             "{}.1",
                             log_path_clone.file_name().unwrap().to_string_lossy()
                         ));
-                        let _ = std::fs::rename(&log_path_clone, &rotated);
-                        // Start new file.
-                        log_file = File::create(&log_path_clone)?;
+                        let _ = fs::rename(&log_path_clone, &rotated);
+                        log_file = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .truncate(true)
+                            .open(&log_path_clone)?;
                         current_len = 0;
                     }
                 }
-
                 log_file.write_all(&chunk)?;
                 current_len += chunk.len() as u64;
             }
             Ok(())
-        })
-    };
+        });
 
-    // Helper spawning one reader thread per pipe that forwards bytes to the
-    // per-stream artifact file and to the shared channel.
-    fn spawn_reader<R: Read + Send + 'static>(
-        reader: R,
-        mut dest_file: File,
-        tx: mpsc::Sender<Vec<u8>>,
-    ) -> std::thread::JoinHandle<io::Result<()>> {
-        std::thread::spawn(move || {
-            let mut buf_reader = std::io::BufReader::new(reader);
-            let mut chunk = [0u8; 8192];
-            loop {
-                let n = match buf_reader.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    Err(e) => return Err(e),
-                };
+        // Spawn child process.
+        let started = Utc::now();
+        let mut child = Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
 
-                dest_file.write_all(&chunk[..n])?;
-                // Ignore send errors – means the writer thread already shut down.
-                let _ = tx.send(chunk[..n].to_vec());
+        let stdout_pipe = child.stdout.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "failed to capture stdout")
+        })?;
+        let stderr_pipe = child.stderr.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "failed to capture stderr")
+        })?;
+
+        // Reader helper feeding per-stream artifacts *and* combined log.
+        fn spawn_reader<R: Read + Send + 'static>(
+            reader: R,
+            mut dest: File,
+            tx: mpsc::Sender<Vec<u8>>,
+        ) -> std::thread::JoinHandle<io::Result<()>> {
+            std::thread::spawn(move || {
+                let mut buf = std::io::BufReader::new(reader);
+                let mut chunk = [0u8; 8192];
+                loop {
+                    let n = match buf.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(e) => return Err(e),
+                    };
+                    dest.write_all(&chunk[..n])?;
+                    let _ = tx.send(chunk[..n].to_vec());
+                }
+                Ok(())
+            })
+        }
+
+        let r1 = spawn_reader(stdout_pipe, out_file, tx.clone());
+        let r2 = spawn_reader(stderr_pipe, err_file, tx);
+
+        // Wait with optional timeout.
+        let status = if let Some(secs) = timeout_secs {
+            match child.wait_timeout(Duration::from_secs(secs))? {
+                Some(s) => s,
+                None => {
+                    let _ = child.kill();
+                    child.wait()?
+                }
             }
-            Ok(())
-        })
-    }
+        } else {
+            child.wait()?
+        };
 
-    let stdout_handle = spawn_reader(stdout_pipe, out_file, tx.clone());
-    let stderr_handle = spawn_reader(stderr_pipe, err_file, tx);
+        // Join helper threads.
+        for h in [r1, r2] {
+            match h.join() {
+                Ok(res) => res?,
+                Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "reader thread panicked")),
+            }
+        }
 
-    // Wait for the child process to exit *and* for the reader threads to
-    // finish flushing their respective buffers.
-    let status = child_proc.wait()?;
+        match writer_handle.join() {
+            Ok(res) => res?,
+            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "writer thread panicked")),
+        }
 
-    // ------------------------------------------------------------------
-    // Determine a portable numeric exit code.
-    //
-    // On Unix-like systems a process that terminates due to a signal does
-    // not have a conventional exit status. The idiomatic convention used
-    // by many tools (bash, coreutils, git, etc.) is to report *128 + signal*.
-    // Capturing this information allows the parent `pend wait` invocation to
-    // faithfully propagate failure causes such as SIGKILL or SIGTERM.
-    //
-    // On non-Unix platforms we fall back to the existing behaviour.
-    // ------------------------------------------------------------------
+        let ended = Utc::now();
 
-    #[cfg(unix)]
-    use std::os::unix::process::ExitStatusExt;
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
 
-    let mut exit_code = 1;
+        let mut exit_code = 1;
+        #[cfg(unix)]
+        let mut terminated_signal: Option<i32> = None;
 
-    #[cfg(unix)]
-    let mut terminated_signal: Option<i32> = None;
-
-    match status.code() {
-        Some(code) => exit_code = code,
-        None => {
-            #[cfg(unix)]
-            {
+        match status.code() {
+            Some(c) => exit_code = c,
+            None => {
+                #[cfg(unix)]
                 if let Some(sig) = status.signal() {
                     terminated_signal = Some(sig);
                     exit_code = 128 + sig;
                 }
             }
         }
-    }
 
-    // Write exit code and, if available, signal file early.
-    fs::write(&paths.exit, format!("{}\n", exit_code))?;
-
-    #[cfg(unix)]
-    if let Some(sig) = terminated_signal {
-        let _ = fs::write(&paths.signal, format!("{}\n", sig));
-    }
-
-    let join_and_check = |handle: std::thread::JoinHandle<io::Result<()>>| -> io::Result<()> {
-        match handle.join() {
-            Err(join_err) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("log thread panicked: {:?}", join_err),
-            )),
-            Ok(res) => res,
+        #[cfg(unix)]
+        if let Some(sig) = terminated_signal {
+            let _ = fs::write(&paths.signal, format!("{}\n", sig));
         }
-    };
 
-    join_and_check(stdout_handle)?;
-    join_and_check(stderr_handle)?;
+        Ok((exit_code, started, ended, child.id()))
+    }
 
-    // Wait for writer.
-    join_and_check(log_handle)?;
+    // ------------------------------------------------------------------
+    // Retry loop.
+    // ------------------------------------------------------------------
 
-    let ended = chrono::Utc::now();
+    let mut append = false;
+    let mut first_started = Utc::now();
+    let mut last_ended = Utc::now();
+    let mut final_pid = 0;
+    let mut final_exit_code = 1;
 
-    // Serialize metadata.
+    loop {
+        let (code, started, ended, pid) = run_once(cmd, &paths, timeout_secs, append)?;
+
+        if !append {
+            first_started = started;
+        }
+        last_ended = ended;
+        final_pid = pid;
+        final_exit_code = code;
+
+        if code == 0 || retries_left == 0 {
+            break;
+        }
+        retries_left -= 1;
+        append = true;
+    }
+
+    // ------------------------------------------------------------------
+    // Persist exit code and metadata.
+    // ------------------------------------------------------------------
+    fs::write(&paths.exit, format!("{}\n", final_exit_code))?;
+
     let meta = Meta {
         job: job_name,
         cmd: cmd.to_vec(),
-        pid: child_proc.id(),
-        started: started.to_rfc3339(),
-        ended: ended.to_rfc3339(),
-        exit_code,
+        pid: final_pid,
+        started: first_started.to_rfc3339(),
+        ended: last_ended.to_rfc3339(),
+        exit_code: final_exit_code,
     };
     let json = serde_json::to_vec_pretty(&meta)?;
     fs::write(&paths.meta, json)?;

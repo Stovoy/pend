@@ -558,6 +558,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-normalization",
+ "wait-timeout",
 ]
 
 [[package]]

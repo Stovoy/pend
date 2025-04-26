@@ -21,7 +21,12 @@ use fs2::FileExt;
 use std::fs::OpenOptions;
 
 /// Public helper equivalent to `pend do <job> <cmd …>`.
-pub(crate) fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
+pub(crate) fn do_job(
+    job_name: &str,
+    cmd: &[String],
+    timeout: Option<u64>,
+    retries: Option<u32>,
+) -> io::Result<()> {
     if job_name.trim().is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -133,5 +138,5 @@ pub(crate) fn do_job(job_name: &str, cmd: &[String]) -> io::Result<()> {
         ));
     }
 
-    super::worker::spawn_worker(job_name, cmd)
+    super::worker::spawn_worker(job_name, cmd, timeout, retries)
 }

@@ -17,6 +17,7 @@ fs2 = "0.4"
 notify = { version = "6" }
 anstyle = "1.0"
 crossterm = "0.27"
+wait-timeout = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -81,6 +81,15 @@ enum Commands {
         job_name: String,
         #[arg(required = true, trailing_var_arg = true)]
         cmd: Vec<String>,
+
+        /// Optional timeout in seconds after which the command will be killed.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
+
+        /// How many times to retry the command when it exits with a non-zero
+        /// status or times out.
+        #[arg(long, value_name = "N")]
+        retries: Option<u32>,
     },
 
     /// Block on one or more jobs and replay their output
@@ -149,7 +158,12 @@ fn try_main() -> io::Result<()> {
     }
 
     match cli.command {
-        Commands::Do { job_name, cmd } => do_job(&job_name, &cmd),
+        Commands::Do {
+            job_name,
+            cmd,
+            timeout,
+            retries,
+        } => do_job(&job_name, &cmd, timeout, retries),
         Commands::Wait { job_names } => {
             let code = wait_jobs(&job_names)?;
             std::process::exit(code);
