@@ -298,7 +298,6 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
             let _ = std::fs::write(&paths.err, format!("{}\n", err));
             let _ = std::fs::write(&paths.log, format!("{}\n", err));
 
-            let now = Utc::now();
             let _ = std::fs::write(&paths.exit, format!("{}\n", code));
 
             // Remove advisory lock so further commands are not blocked.
