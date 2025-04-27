@@ -269,8 +269,45 @@ pub(crate) fn run_worker(job_name: &str, cmd: &[String]) -> io::Result<()> {
     // Retry loop.
     // ------------------------------------------------------------------
 
-    let (mut final_exit_code, first_started, mut last_ended, mut final_pid) =
-        run_once(cmd, &paths, timeout_secs, false)?;
+    // Run the first attempt, capturing any immediate failure (e.g. command
+    // could not be spawned).  Instead of propagating the error upwards –
+    // which would leave a stale `.lock` behind and thus stall `pend wait` –
+    // convert *any* error into an artificial non-zero exit code and ensure we
+    // persist the usual artifacts so other commands observe a completed job.
+
+    let first_attempt = run_once(cmd, &paths, timeout_secs, false);
+
+    let (
+        mut final_exit_code,
+        first_started,
+        mut last_ended,
+        mut final_pid,
+    ) = match first_attempt {
+        Ok(tuple) => tuple,
+        Err(err) => {
+            // Record the failure so that `pend wait` sees the job as
+            // finished. We deliberately choose exit code 127 which is widely
+            // used for *command not found* on Unix shells and unambiguously
+            // indicates a setup error.
+
+            let code = 127;
+
+            // Best-effort: write diagnostic message to `.err` / `.log` so
+            // users can inspect what went wrong later. Ignore I/O problems
+            // here – the crucial piece is the `.exit` file.
+            let _ = std::fs::write(&paths.err, format!("{}\n", err));
+            let _ = std::fs::write(&paths.log, format!("{}\n", err));
+
+            let now = Utc::now();
+            let _ = std::fs::write(&paths.exit, format!("{}\n", code));
+
+            // Remove advisory lock so further commands are not blocked.
+            drop(lock_file);
+            let _ = std::fs::remove_file(&paths.lock);
+
+            return Ok(());
+        }
+    };
 
     let append = true; // subsequent attempts should append to existing log files
 
