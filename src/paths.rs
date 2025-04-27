@@ -110,6 +110,12 @@ impl JobPaths {
             || self.meta.exists()
             || self.log.exists()
             || self.signal.exists()
+            // Presence of the advisory lock implies a *pend do* invocation
+            // is in progress even when the worker has not yet emitted any
+            // output files. Including it here avoids a short but racy window
+            // in which `pend wait` executed immediately after `pend do` would
+            // return `NotFound` despite the job just having been launched.
+            || self.lock.exists()
     }
 
     /// Generic helper returning the file size for the given path or `0` if the

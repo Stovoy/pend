@@ -370,7 +370,7 @@ fn emit_summary<P: AsRef<std::path::Path>>(
 
     let symbol = if exit_code == 0 { "✓" } else { "✗" };
     println!(
-        "{} {} ({} s) – exit {}",
+        "{} {} ({}s) – exit {}",
         symbol, job_name, duration_secs, exit_code
     );
     Ok(())
